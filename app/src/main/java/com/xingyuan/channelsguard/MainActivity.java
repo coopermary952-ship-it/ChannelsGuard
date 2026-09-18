@@ -1,6 +1,7 @@
 package com.xingyuan.channelsguard;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -14,6 +15,7 @@ import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
@@ -23,18 +25,34 @@ import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
 
+    static final String KEY_LOCK_UNTIL = GuardService.KEY_LOCK_UNTIL;
+
+    private static final long HOUR = 3_600_000L;
+    private static final long DAY = 86_400_000L;
+
+    // 承诺期选项：以小时和天为单位
+    private static final String[] LOCK_LABELS = {"12 小时", "1 天", "3 天", "7 天"};
+    private static final long[] LOCK_DURATIONS = {12 * HOUR, DAY, 3 * DAY, 7 * DAY};
+
+    private SharedPreferences prefs;
     private TextView statusView;
     private TextView statsView;
     private TextView debugView;
+    private TextView lockInfoView;
     private RadioGroup modeGroup;
+    private RadioButton rbStrict;
+    private RadioButton rbTimed;
+    private RadioButton rbOff;
     private RadioGroup minutesGroup;
     private TextView minutesLabel;
+    private RadioGroup lockGroup;
+    private TextView lockLabel;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        SharedPreferences prefs = getSharedPreferences(GuardService.PREFS, MODE_PRIVATE);
+        prefs = getSharedPreferences(GuardService.PREFS, MODE_PRIVATE);
 
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
@@ -68,20 +86,40 @@ public class MainActivity extends Activity {
         statsView.setPadding(0, dp(18), 0, dp(4));
         root.addView(statsView);
 
-        TextView modeLabel = sectionLabel("守护模式");
-        root.addView(modeLabel);
+        lockInfoView = new TextView(this);
+        lockInfoView.setTextSize(15);
+        lockInfoView.setTextColor(Color.rgb(0xC6, 0x28, 0x28));
+        lockInfoView.setTypeface(Typeface.DEFAULT_BOLD);
+        lockInfoView.setPadding(0, dp(10), 0, 0);
+        root.addView(lockInfoView);
+
+        root.addView(sectionLabel("守护模式"));
 
         modeGroup = new RadioGroup(this);
-        RadioButton rbStrict = new RadioButton(this);
-        rbStrict.setText("严格模式：在视频号里一滑动就退出");
-        RadioButton rbTimed = new RadioButton(this);
+        rbStrict = new RadioButton(this);
+        rbStrict.setText("严格模式：在视频号里一滑动就退出（需承诺期）");
+        rbTimed = new RadioButton(this);
         rbTimed.setText("限时模式：可自由观看，到点自动退出");
-        RadioButton rbOff = new RadioButton(this);
+        rbOff = new RadioButton(this);
         rbOff.setText("暂停守护");
         modeGroup.addView(rbStrict);
         modeGroup.addView(rbTimed);
         modeGroup.addView(rbOff);
         root.addView(modeGroup);
+
+        lockLabel = sectionLabel("严格模式承诺期（选定后到期前不可更改模式）");
+        root.addView(lockLabel);
+
+        lockGroup = new RadioGroup(this);
+        lockGroup.setOrientation(RadioGroup.HORIZONTAL);
+        for (int i = 0; i < LOCK_LABELS.length; i++) {
+            RadioButton rb = new RadioButton(this);
+            rb.setText(LOCK_LABELS[i]);
+            rb.setId(2000 + i);
+            rb.setTag(LOCK_DURATIONS[i]);
+            lockGroup.addView(rb);
+        }
+        root.addView(lockGroup);
 
         minutesLabel = sectionLabel("限时时长");
         root.addView(minutesLabel);
@@ -92,7 +130,7 @@ public class MainActivity extends Activity {
         for (int m : options) {
             RadioButton rb = new RadioButton(this);
             rb.setText(m + " 分钟");
-            rb.setId(View_id(m));
+            rb.setId(1000 + m);
             rb.setTag(m);
             minutesGroup.addView(rb);
         }
@@ -114,17 +152,46 @@ public class MainActivity extends Activity {
                 rb.setChecked(true);
             }
         }
-        updateMinutesVisibility();
 
         modeGroup.setOnCheckedChangeListener((group, checkedId) -> {
-            String newMode = GuardService.MODE_STRICT;
-            if (checkedId == rbTimed.getId()) {
-                newMode = GuardService.MODE_TIMED;
+            if (checkedId == rbStrict.getId()) {
+                if (isLockActive()) {
+                    saveMode(GuardService.MODE_STRICT);
+                } else {
+                    // 尚未选择承诺期：先不保存，等用户在下方选定时长
+                    Toast.makeText(this, "请选择一个承诺期，到期前将无法更改模式",
+                            Toast.LENGTH_LONG).show();
+                }
+            } else if (checkedId == rbTimed.getId()) {
+                saveMode(GuardService.MODE_TIMED);
             } else if (checkedId == rbOff.getId()) {
-                newMode = GuardService.MODE_OFF;
+                saveMode(GuardService.MODE_OFF);
             }
-            prefs.edit().putString(GuardService.KEY_MODE, newMode).apply();
-            updateMinutesVisibility();
+            updateVisibility();
+        });
+
+        lockGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            RadioButton rb = group.findViewById(checkedId);
+            if (rb == null) {
+                return;
+            }
+            long duration = (long) rb.getTag();
+            new AlertDialog.Builder(this)
+                    .setTitle("确认开启严格模式")
+                    .setMessage("承诺期：" + rb.getText() + "\n\n到期之前，你将无法在 App 内切换到限时模式或暂停守护。确定吗？")
+                    .setPositiveButton("确定，锁定", (d, w) -> {
+                        long until = System.currentTimeMillis() + duration;
+                        prefs.edit()
+                                .putLong(KEY_LOCK_UNTIL, until)
+                                .putString(GuardService.KEY_MODE, GuardService.MODE_STRICT)
+                                .apply();
+                        rbStrict.setChecked(true);
+                        updateVisibility();
+                        Toast.makeText(this, "严格模式已锁定 " + rb.getText(),
+                                Toast.LENGTH_LONG).show();
+                    })
+                    .setNegativeButton("再想想", (d, w) -> group.clearCheck())
+                    .show();
         });
 
         minutesGroup.setOnCheckedChangeListener((group, checkedId) -> {
@@ -153,13 +220,16 @@ public class MainActivity extends Activity {
                 "2. 回到本页确认状态显示「服务运行中」。\n" +
                 "3. 选好模式后，在微信里点开视频号链接即可。\n\n" +
                 "已知限制：\n" +
-                "· 严格模式下，滑动评论区也会触发退出。\n" +
+                "· 严格模式下，快速滑动评论区也可能触发退出。\n" +
+                "· 承诺期只能锁定 App 内的模式切换；\n" +
+                "   直接关闭无障碍服务或卸载 App 无法阻止。\n" +
                 "· 限时模式的倒计时在服务被系统回收后会失效，\n" +
                 "   重新进入视频号会重新开始计时。\n" +
                 "· 微信大版本更新后若失效，请联系小沃更新识别规则。"
         );
         root.addView(howto);
 
+        updateVisibility();
         setContentView(scroll);
     }
 
@@ -169,22 +239,59 @@ public class MainActivity extends Activity {
         refreshStatus();
         refreshStats();
         refreshDebugLog();
+        updateVisibility();
     }
 
-    private void refreshDebugLog() {
-        SharedPreferences prefs = getSharedPreferences(GuardService.PREFS, MODE_PRIVATE);
-        String log = prefs.getString(GuardService.KEY_DEBUG_LOG, "");
-        debugView.setText(log.isEmpty() ? "（暂无记录）" : log.trim());
+    private boolean isLockActive() {
+        String mode = prefs.getString(GuardService.KEY_MODE, GuardService.MODE_STRICT);
+        long until = prefs.getLong(KEY_LOCK_UNTIL, 0);
+        return GuardService.MODE_STRICT.equals(mode) && until > System.currentTimeMillis();
     }
 
-    private void updateMinutesVisibility() {
-        boolean timed = false;
-        if (modeGroup.getChildAt(1) instanceof RadioButton) {
-            timed = ((RadioButton) modeGroup.getChildAt(1)).isChecked();
+    private void saveMode(String mode) {
+        prefs.edit().putString(GuardService.KEY_MODE, mode).apply();
+    }
+
+    private void updateVisibility() {
+        boolean locked = isLockActive();
+
+        // 锁定期间：禁止切换到限时 / 暂停
+        rbTimed.setEnabled(!locked);
+        rbOff.setEnabled(!locked);
+
+        if (locked) {
+            lockInfoView.setVisibility(android.view.View.VISIBLE);
+            lockInfoView.setText("严格模式锁定中，" + formatRemaining() + " 后可更改模式");
+        } else {
+            lockInfoView.setVisibility(android.view.View.GONE);
         }
-        int vis = timed ? android.view.View.VISIBLE : android.view.View.GONE;
-        minutesLabel.setVisibility(vis);
-        minutesGroup.setVisibility(vis);
+
+        // 承诺期选择区：仅在勾选严格模式且未锁定时显示
+        boolean showLockPicker = rbStrict.isChecked() && !locked;
+        lockLabel.setVisibility(showLockPicker ? android.view.View.VISIBLE : android.view.View.GONE);
+        lockGroup.setVisibility(showLockPicker ? android.view.View.VISIBLE : android.view.View.GONE);
+
+        // 限时时长：仅在勾选限时模式时显示
+        boolean timed = rbTimed.isChecked();
+        minutesLabel.setVisibility(timed ? android.view.View.VISIBLE : android.view.View.GONE);
+        minutesGroup.setVisibility(timed ? android.view.View.VISIBLE : android.view.View.GONE);
+    }
+
+    private String formatRemaining() {
+        long remain = prefs.getLong(KEY_LOCK_UNTIL, 0) - System.currentTimeMillis();
+        if (remain <= 0) {
+            return "已到期";
+        }
+        long days = TimeUnit.MILLISECONDS.toDays(remain);
+        long hours = TimeUnit.MILLISECONDS.toHours(remain) % 24;
+        long minutes = TimeUnit.MILLISECONDS.toMinutes(remain) % 60;
+        if (days > 0) {
+            return "剩余 " + days + " 天 " + hours + " 小时";
+        }
+        if (hours > 0) {
+            return "剩余 " + hours + " 小时 " + minutes + " 分";
+        }
+        return "剩余 " + minutes + " 分钟";
     }
 
     private void refreshStatus() {
@@ -201,7 +308,6 @@ public class MainActivity extends Activity {
     }
 
     private void refreshStats() {
-        SharedPreferences prefs = getSharedPreferences(GuardService.PREFS, MODE_PRIVATE);
         String today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
         int todayCount = prefs.getInt(GuardService.KEY_DAY_PREFIX + today, 0);
         long total = prefs.getLong(GuardService.KEY_TOTAL_BLOCKS, 0);
@@ -221,6 +327,11 @@ public class MainActivity extends Activity {
                 + (days > 0 ? " ｜ 已守护 " + days + " 天" : ""));
     }
 
+    private void refreshDebugLog() {
+        String log = prefs.getString(GuardService.KEY_DEBUG_LOG, "");
+        debugView.setText(log.isEmpty() ? "（暂无记录）" : log.trim());
+    }
+
     private TextView sectionLabel(String text) {
         TextView tv = new TextView(this);
         tv.setText(text);
@@ -229,11 +340,6 @@ public class MainActivity extends Activity {
         tv.setTextColor(Color.GRAY);
         tv.setPadding(0, dp(18), 0, dp(4));
         return tv;
-    }
-
-    private int View_id(int minutes) {
-        // 用固定偏移生成稳定 id，避免与系统 id 冲突
-        return 1000 + minutes;
     }
 
     private int dp(int v) {

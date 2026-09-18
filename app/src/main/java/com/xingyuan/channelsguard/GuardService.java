@@ -12,7 +12,7 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * 视频号守门员核心服务（v2.1）。
+ * 视频号守门员核心服务（v2.2）。
  *
  * 原理：
  * 1. 监听微信（com.tencent.mm）的窗口切换事件，类名包含 "finder" 即为视频号界面。
@@ -33,6 +33,7 @@ public class GuardService extends AccessibilityService {
     static final String KEY_FIRST_DATE = "first_date";
     static final String KEY_DAY_PREFIX = "count_";    // count_yyyy-MM-dd
     static final String KEY_DEBUG_LOG = "debug_log";
+    static final String KEY_LOCK_UNTIL = "lock_until"; // 严格模式承诺期截止时间（毫秒）
 
     static final String MODE_STRICT = "strict";
     static final String MODE_TIMED = "timed";
@@ -63,7 +64,7 @@ public class GuardService extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        String mode = prefs.getString(KEY_MODE, MODE_STRICT);
+        String mode = effectiveMode(prefs);
         if (MODE_OFF.equals(mode)) {
             resetState();
             return;
@@ -116,10 +117,27 @@ public class GuardService extends AccessibilityService {
                 return;
             }
             lastBlockMs = now;
+            int hits = scrollCount;
             scrollCount = 0;
-            logEvent(prefs, "拦截: 1秒内滚动" + scrollCount + "+次，判定为甩动");
+            logEvent(prefs, "拦截: 1秒内滚动" + hits + "次，判定为甩动");
             blockAndExit(prefs, "想滑下一条？已帮你退出");
         }
+    }
+
+    /**
+     * 承诺期生效则强制为严格模式——即便用户绕过 UI 直接改了 SharedPreferences 也不放行。
+     * 承诺期到点后自动解除，恢复为预存模式。
+     */
+    private String effectiveMode(SharedPreferences prefs) {
+        String mode = prefs.getString(KEY_MODE, MODE_STRICT);
+        long until = prefs.getLong(KEY_LOCK_UNTIL, 0);
+        if (until > System.currentTimeMillis()) {
+            return MODE_STRICT;
+        }
+        if (MODE_STRICT.equals(mode) && until > 0) {
+            prefs.edit().putLong(KEY_LOCK_UNTIL, 0).apply();
+        }
+        return mode;
     }
 
     /** 限时模式：安排「剩余 1 分钟提醒」与「到点退出」。 */
