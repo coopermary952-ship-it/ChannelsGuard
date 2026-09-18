@@ -1,0 +1,14 @@
+# Android / Gradle
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+.cxx/
+
+# 编译产物（APK 通过 GitHub Release 分发，不进仓库）
+dist/
+
+# macOS
+.DS_Store
