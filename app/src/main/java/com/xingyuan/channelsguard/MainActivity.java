@@ -25,6 +25,7 @@ public class MainActivity extends Activity {
 
     private TextView statusView;
     private TextView statsView;
+    private TextView debugView;
     private RadioGroup modeGroup;
     private RadioGroup minutesGroup;
     private TextView minutesLabel;
@@ -133,6 +134,15 @@ public class MainActivity extends Activity {
             }
         });
 
+        TextView debugLabel = sectionLabel("调试日志（拦截记录，用于排查问题）");
+        root.addView(debugLabel);
+
+        debugView = new TextView(this);
+        debugView.setTextSize(12);
+        debugView.setTextColor(Color.GRAY);
+        debugView.setTypeface(Typeface.MONOSPACE);
+        root.addView(debugView);
+
         TextView howto = new TextView(this);
         howto.setTextSize(14);
         howto.setTextColor(Color.DKGRAY);
@@ -158,6 +168,13 @@ public class MainActivity extends Activity {
         super.onResume();
         refreshStatus();
         refreshStats();
+        refreshDebugLog();
+    }
+
+    private void refreshDebugLog() {
+        SharedPreferences prefs = getSharedPreferences(GuardService.PREFS, MODE_PRIVATE);
+        String log = prefs.getString(GuardService.KEY_DEBUG_LOG, "");
+        debugView.setText(log.isEmpty() ? "（暂无记录）" : log.trim());
     }
 
     private void updateMinutesVisibility() {

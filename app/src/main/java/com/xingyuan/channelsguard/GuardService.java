@@ -12,14 +12,17 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * 视频号守门员核心服务（v2）。
+ * 视频号守门员核心服务（v2.1）。
  *
  * 原理：
  * 1. 监听微信（com.tencent.mm）的窗口切换事件，类名包含 "finder" 即为视频号界面。
- * 2. 严格模式：处于视频号界面时，收到 VIEW_SCROLLED（上下滑切换视频）立即全局返回。
+ * 2. 严格模式：识别「真实甩动」手势——1 秒内连续滚动事件 ≥ FLING_THRESHOLD 次
+ *    才判定为用户主动下滑，执行全局返回。
+ *    （v2.0 按时间宽限判断，第二次点开链接时微信恢复浏览状态的滚动
+ *      超过宽限期会被误判，导致"点开第二个链接直接被退出"。）
  * 3. 限时模式：进入视频号后启动倒计时，剩余 1 分钟时提醒，到点自动全局返回。
  *
- * 统计：每次拦截计入「累计拦截」与「今日拦截」，供主界面展示。
+ * 调试：最近 30 条关键事件会记录到 SharedPreferences，主界面可查看。
  */
 public class GuardService extends AccessibilityService {
 
@@ -29,18 +32,24 @@ public class GuardService extends AccessibilityService {
     static final String KEY_TOTAL_BLOCKS = "total_blocks";
     static final String KEY_FIRST_DATE = "first_date";
     static final String KEY_DAY_PREFIX = "count_";    // count_yyyy-MM-dd
+    static final String KEY_DEBUG_LOG = "debug_log";
 
     static final String MODE_STRICT = "strict";
     static final String MODE_TIMED = "timed";
     static final String MODE_OFF = "off";
 
-    private static final long ENTER_GRACE_MS = 1500;
+    private static final long ENTER_GRACE_MS = 2000;       // 进入界面后的初始化宽限
+    private static final int FLING_THRESHOLD = 4;          // 判定甩动的滚动次数阈值
+    private static final long FLING_WINDOW_MS = 1000;      // 甩动判定的时间窗口
     private static final long BLOCK_DEBOUNCE_MS = 1000;
-    private static final long WARN_BEFORE_MS = 60_000; // 到点前 1 分钟提醒
+    private static final long WARN_BEFORE_MS = 60_000;
+    private static final int DEBUG_LOG_MAX = 30;
 
     private boolean inChannels = false;
     private long enterTimeMs = 0;
     private long lastBlockMs = 0;
+    private int scrollCount = 0;
+    private long lastScrollMs = 0;
     private Handler handler;
     private Runnable exitRunnable;
     private Runnable warnRunnable;
@@ -72,12 +81,16 @@ public class GuardService extends AccessibilityService {
             boolean nowInChannels = cls.toLowerCase().contains("finder");
             if (nowInChannels && !inChannels) {
                 enterTimeMs = System.currentTimeMillis();
+                scrollCount = 0;
+                lastScrollMs = 0;
+                logEvent(prefs, "进入视频号: " + cls);
                 if (MODE_TIMED.equals(mode)) {
                     startTimedSession(prefs);
                 } else {
                     toast("已进入视频号，向下滑动将被拦截");
                 }
             } else if (!nowInChannels && inChannels) {
+                logEvent(prefs, "离开视频号: " + cls);
                 cancelTimers();
             }
             inChannels = nowInChannels;
@@ -87,12 +100,24 @@ public class GuardService extends AccessibilityService {
             }
             long now = System.currentTimeMillis();
             if (now - enterTimeMs < ENTER_GRACE_MS) {
+                return; // 初始化阶段的滚动不介入
+            }
+            // 甩动识别：超过 1 秒没有滚动则重新计数；
+            // 窗口内累计达到阈值才判定为用户主动下滑
+            if (now - lastScrollMs > FLING_WINDOW_MS) {
+                scrollCount = 0;
+            }
+            lastScrollMs = now;
+            scrollCount++;
+            if (scrollCount < FLING_THRESHOLD) {
                 return;
             }
             if (now - lastBlockMs < BLOCK_DEBOUNCE_MS) {
                 return;
             }
             lastBlockMs = now;
+            scrollCount = 0;
+            logEvent(prefs, "拦截: 1秒内滚动" + scrollCount + "+次，判定为甩动");
             blockAndExit(prefs, "想滑下一条？已帮你退出");
         }
     }
@@ -134,8 +159,25 @@ public class GuardService extends AccessibilityService {
         e.apply();
     }
 
+    /** 追加一条调试日志（环形保留最近 30 条），供主界面查看。 */
+    private void logEvent(SharedPreferences prefs, String msg) {
+        String time = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
+        String old = prefs.getString(KEY_DEBUG_LOG, "");
+        String next = time + " " + msg + "\n" + old;
+        String[] lines = next.split("\n");
+        if (lines.length > DEBUG_LOG_MAX) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < DEBUG_LOG_MAX; i++) {
+                sb.append(lines[i]).append("\n");
+            }
+            next = sb.toString();
+        }
+        prefs.edit().putString(KEY_DEBUG_LOG, next).apply();
+    }
+
     private void resetState() {
         inChannels = false;
+        scrollCount = 0;
         cancelTimers();
     }
 
