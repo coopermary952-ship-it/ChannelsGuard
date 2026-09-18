@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
@@ -12,23 +13,30 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * 视频号守门员核心服务（v2.2）。
+ * 视频号守门员核心服务（v2.3）。
  *
  * 原理：
  * 1. 监听微信（com.tencent.mm）的窗口切换事件，类名包含 "finder" 即为视频号界面。
- * 2. 严格模式：识别「真实甩动」手势——1 秒内连续滚动事件 ≥ FLING_THRESHOLD 次
- *    才判定为用户主动下滑，执行全局返回。
- *    （v2.0 按时间宽限判断，第二次点开链接时微信恢复浏览状态的滚动
- *      超过宽限期会被误判，导致"点开第二个链接直接被退出"。）
- * 3. 限时模式：进入视频号后启动倒计时，剩余 1 分钟时提醒，到点自动全局返回。
+ * 2. 严格模式：进入视频号后累计滚动事件的次数（不再限定必须发生在同一秒内），
+ *    达到灵敏度阈值即为"你在往下刷"，执行全局返回。
+ *    v2.1/v2.2 用「1 秒内连续 ≥4 次」判定，忽略了"看完一段再滑"的间隔，
+ *    导致连续刷数个视频都拦不住，本版改为累计计数 + 灵敏度可配置。
+ * 3. 返回可能被部分 ROM / 微信吃掉，因此一次 BACK 后会在 0.7s / 1.5s 各复核一次，
+ *    只要仍在视频号界面就补发 BACK（最多 3 次）。
+ * 4. 限时模式：进入视频号后启动倒计时，剩余 1 分钟时提醒，到点自动返回。
  *
- * 调试：最近 30 条关键事件会记录到 SharedPreferences，主界面可查看。
+ * 实验功能：content_watch —— 若你的微信压根不发出滚动事件（调试日志里看不到
+ * "滑动"记录），可用画面内容指纹兜底检测视频切换。默认关闭。
+ *
+ * 调试：最近 30 条关键事件会记录到 SharedPreferences，主界面可查看、可复制。
  */
 public class GuardService extends AccessibilityService {
 
     static final String PREFS = "guard_prefs";
     static final String KEY_MODE = "mode";            // strict | timed | off
     static final String KEY_TIMED_MINUTES = "timed_minutes";
+    static final String KEY_SENSITIVITY = "sensitivity";      // 触发拦截所需的累计滚动次数
+    static final String KEY_CONTENT_WATCH = "content_watch";  // 实验：内容指纹兜底
     static final String KEY_TOTAL_BLOCKS = "total_blocks";
     static final String KEY_FIRST_DATE = "first_date";
     static final String KEY_DAY_PREFIX = "count_";    // count_yyyy-MM-dd
@@ -40,20 +48,30 @@ public class GuardService extends AccessibilityService {
     static final String MODE_OFF = "off";
 
     private static final long ENTER_GRACE_MS = 2000;       // 进入界面后的初始化宽限
-    private static final int FLING_THRESHOLD = 4;          // 判定甩动的滚动次数阈值
-    private static final long FLING_WINDOW_MS = 1000;      // 甩动判定的时间窗口
-    private static final long BLOCK_DEBOUNCE_MS = 1000;
+    private static final long BLOCK_DEBOUNCE_MS = 1200;    // 两次拦截的最小间隔
     private static final long WARN_BEFORE_MS = 60_000;
     private static final int DEBUG_LOG_MAX = 30;
+
+    /** BACK 的补发时机：首次立即，之后 0.7s / 1.5s 各复核一次。 */
+    private static final long[] BACK_RETRY_DELAYS = {0L, 700L, 1500L};
+
+    /** 内容指纹轮询间隔（仅实验功能开启时运行）。 */
+    private static final long CONTENT_POLL_MS = 800;
+    private static final int CONTENT_MAX_NODES = 220;
+    private static final long CONTENT_BASELINE_DELAY_MS = 2500; // 先等界面稳定再取基准指纹
 
     private boolean inChannels = false;
     private long enterTimeMs = 0;
     private long lastBlockMs = 0;
-    private int scrollCount = 0;
-    private long lastScrollMs = 0;
+    private int scrollAccumulator = 0;   // 进入视频号后的累计滚动次数
+    private int loggedScrolls = 0;       // 已写入调试日志的滚动条数（避免刷屏）
+    private String lastFingerprint = null;
+    private boolean fingerprintBaselined = false;
+
     private Handler handler;
     private Runnable exitRunnable;
     private Runnable warnRunnable;
+    private Runnable contentPollRunnable;
 
     @Override
     public void onCreate() {
@@ -81,64 +99,112 @@ public class GuardService extends AccessibilityService {
             String cls = String.valueOf(event.getClassName());
             boolean nowInChannels = cls.toLowerCase().contains("finder");
             if (nowInChannels && !inChannels) {
-                enterTimeMs = System.currentTimeMillis();
-                scrollCount = 0;
-                lastScrollMs = 0;
-                logEvent(prefs, "进入视频号: " + cls);
-                if (MODE_TIMED.equals(mode)) {
-                    startTimedSession(prefs);
-                } else {
-                    toast("已进入视频号，向下滑动将被拦截");
-                }
+                onEnterChannels(prefs, mode, cls);
             } else if (!nowInChannels && inChannels) {
                 logEvent(prefs, "离开视频号: " + cls);
-                cancelTimers();
+                leaveChannels();
             }
             inChannels = nowInChannels;
         } else if (type == AccessibilityEvent.TYPE_VIEW_SCROLLED && inChannels) {
             if (!MODE_STRICT.equals(mode)) {
                 return; // 限时模式下允许自由滑动，到点统一退出
             }
-            long now = System.currentTimeMillis();
-            if (now - enterTimeMs < ENTER_GRACE_MS) {
-                return; // 初始化阶段的滚动不介入
-            }
-            // 甩动识别：超过 1 秒没有滚动则重新计数；
-            // 窗口内累计达到阈值才判定为用户主动下滑
-            if (now - lastScrollMs > FLING_WINDOW_MS) {
-                scrollCount = 0;
-            }
-            lastScrollMs = now;
-            scrollCount++;
-            if (scrollCount < FLING_THRESHOLD) {
-                return;
-            }
-            if (now - lastBlockMs < BLOCK_DEBOUNCE_MS) {
-                return;
-            }
-            lastBlockMs = now;
-            int hits = scrollCount;
-            scrollCount = 0;
-            logEvent(prefs, "拦截: 1秒内滚动" + hits + "次，判定为甩动");
-            blockAndExit(prefs, "想滑下一条？已帮你退出");
+            onStrictScroll(prefs, event);
         }
     }
 
-    /**
-     * 承诺期生效则强制为严格模式——即便用户绕过 UI 直接改了 SharedPreferences 也不放行。
-     * 承诺期到点后自动解除，恢复为预存模式。
-     */
-    private String effectiveMode(SharedPreferences prefs) {
-        String mode = prefs.getString(KEY_MODE, MODE_STRICT);
-        long until = prefs.getLong(KEY_LOCK_UNTIL, 0);
-        if (until > System.currentTimeMillis()) {
-            return MODE_STRICT;
+    // ---------------- 进入 / 离开 ----------------
+
+    private void onEnterChannels(SharedPreferences prefs, String mode, String cls) {
+        enterTimeMs = System.currentTimeMillis();
+        scrollAccumulator = 0;
+        loggedScrolls = 0;
+        lastFingerprint = null;
+        fingerprintBaselined = false;
+        logEvent(prefs, "进入视频号: " + cls);
+
+        if (MODE_TIMED.equals(mode)) {
+            startTimedSession(prefs);
+        } else {
+            toast("已进入视频号，向下滑动将被拦截");
+            if (prefs.getBoolean(KEY_CONTENT_WATCH, false)) {
+                startContentWatch();
+            }
         }
-        if (MODE_STRICT.equals(mode) && until > 0) {
-            prefs.edit().putLong(KEY_LOCK_UNTIL, 0).apply();
-        }
-        return mode;
     }
+
+    private void leaveChannels() {
+        stopContentWatch();
+        cancelTimers();
+    }
+
+    // ---------------- 严格模式拦截 ----------------
+
+    private void onStrictScroll(SharedPreferences prefs, AccessibilityEvent event) {
+        long now = System.currentTimeMillis();
+        if (now - enterTimeMs < ENTER_GRACE_MS) {
+            return; // 初始化阶段的滚动（含第二个链接的状态恢复）不介入
+        }
+
+        int dy = 0;
+        try {
+            dy = event.getScrollDeltaY(); // API 26+
+        } catch (Throwable ignored) {
+            // 个别 ROM 不支持，忽略即可
+        }
+
+        scrollAccumulator++;
+        int sensitivity = prefs.getInt(KEY_SENSITIVITY, 2);
+
+        // 少量滚动写入日志用于排查，超过 6 条后只在临近阈值时记录，避免刷屏
+        if (loggedScrolls < 6 || scrollAccumulator >= sensitivity - 1) {
+            loggedScrolls++;
+            logEvent(prefs, "滑动 ΔY=" + dy + " 第" + scrollAccumulator + "次/阈值" + sensitivity);
+        }
+
+        boolean enough = scrollAccumulator >= sensitivity;
+        if (!enough) {
+            return;
+        }
+        if (now - lastBlockMs < BLOCK_DEBOUNCE_MS) {
+            return;
+        }
+        lastBlockMs = now;
+        int hits = scrollAccumulator;
+        scrollAccumulator = 0;
+        logEvent(prefs, "拦截: 累计滑动" + hits + "次触发");
+        blockAndExit(prefs, "想滑下一条？已帮你退出");
+    }
+
+    // ---------------- 退出执行 ----------------
+
+    private void blockAndExit(SharedPreferences prefs, String message) {
+        recordBlock(prefs);
+        long total = prefs.getLong(KEY_TOTAL_BLOCKS, 0);
+        backOutWithRetry();
+        toast(message + "（累计拦截 " + total + " 次）");
+        // 指纹基准作废，待下一次进入时重新采样
+        lastFingerprint = null;
+        fingerprintBaselined = false;
+    }
+
+    /**
+     * 连续发返回键并在 0.7s / 1.5s 后复核：部分 ROM 或横屏/手势状态下，
+     * 单次 GLOBAL_ACTION_BACK 可能被吞掉，导致看起来"没退出"。
+     */
+    private void backOutWithRetry() {
+        for (int i = 0; i < BACK_RETRY_DELAYS.length; i++) {
+            final boolean checkState = i > 0;
+            handler.postDelayed(() -> {
+                if (checkState && !inChannels) {
+                    return; // 已经离开视频号，不需要补发
+                }
+                performGlobalAction(GLOBAL_ACTION_BACK);
+            }, BACK_RETRY_DELAYS[i]);
+        }
+    }
+
+    // ---------------- 限时模式 ----------------
 
     /** 限时模式：安排「剩余 1 分钟提醒」与「到点退出」。 */
     private void startTimedSession(SharedPreferences prefs) {
@@ -159,11 +225,116 @@ public class GuardService extends AccessibilityService {
         handler.postDelayed(exitRunnable, limitMs);
     }
 
-    private void blockAndExit(SharedPreferences prefs, String message) {
-        recordBlock(prefs);
-        long total = prefs.getLong(KEY_TOTAL_BLOCKS, 0);
-        performGlobalAction(GLOBAL_ACTION_BACK);
-        toast(message + "（累计拦截 " + total + " 次）");
+    // ---------------- 实验：画面内容指纹兜底 ----------------
+
+    /**
+     * 轮询整棵视图树的可见文本摘要作为指纹。指纹变化说明屏幕内容整体换了
+     * （通常是切到了下一条视频）。仅在用户手动开启 content_watch 时运行。
+     */
+    private void startContentWatch() {
+        stopContentWatch();
+        // 先等界面稳定（避开加载、布局动画），再采样基准指纹
+        handler.postDelayed(() -> {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            lastFingerprint = fingerprintOf(root);
+            recycleQuietly(root);
+            fingerprintBaselined = true;
+            logEvent(getSharedPreferences(PREFS, MODE_PRIVATE),
+                    "内容检测: 已取基准指纹");
+        }, CONTENT_BASELINE_DELAY_MS);
+
+        contentPollRunnable = new Runnable() {
+            @Override
+            public void run() {
+                SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+                if (!fingerprintBaselined || !inChannels
+                        || System.currentTimeMillis() - enterTimeMs < ENTER_GRACE_MS) {
+                    handler.postDelayed(this, CONTENT_POLL_MS);
+                    return;
+                }
+                AccessibilityNodeInfo root = getRootInActiveWindow();
+                String current = fingerprintOf(root);
+                recycleQuietly(root);
+                if (current != null && !current.equals(lastFingerprint)) {
+                    if (System.currentTimeMillis() - lastBlockMs >= BLOCK_DEBOUNCE_MS) {
+                        lastBlockMs = System.currentTimeMillis();
+                        logEvent(prefs, "拦截: 画面内容变化（内容检测）");
+                        blockAndExit(prefs, "检测到换了视频，已退出");
+                    }
+                }
+                lastFingerprint = current;
+                handler.postDelayed(this, CONTENT_POLL_MS);
+            }
+        };
+        handler.postDelayed(contentPollRunnable, CONTENT_BASELINE_DELAY_MS + CONTENT_POLL_MS);
+    }
+
+    private void stopContentWatch() {
+        if (contentPollRunnable != null) {
+            handler.removeCallbacks(contentPollRunnable);
+            contentPollRunnable = null;
+        }
+    }
+
+    /** 遍历视图树，收集可见文本节点，生成结构+文本摘要。 */
+    private String fingerprintOf(AccessibilityNodeInfo root) {
+        if (root == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        collectText(root, sb, 0, new int[]{0});
+        return sb.toString();
+    }
+
+    private void collectText(AccessibilityNodeInfo node, StringBuilder sb, int depth, int[] budget) {
+        if (node == null || budget[0] > CONTENT_MAX_NODES || depth > 18) {
+            return;
+        }
+        budget[0]++;
+        CharSequence text = node.getText();
+        if (text != null && text.length() > 0) {
+            sb.append(text).append('|');
+        } else {
+            CharSequence desc = node.getContentDescription();
+            if (desc != null && desc.length() > 0) {
+                sb.append(desc).append('|');
+            }
+        }
+        int count = node.getChildCount();
+        for (int i = 0; i < count && budget[0] <= CONTENT_MAX_NODES; i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                collectText(child, sb, depth + 1, budget);
+                child.recycle();
+            }
+        }
+    }
+
+    private void recycleQuietly(AccessibilityNodeInfo node) {
+        if (node != null) {
+            try {
+                node.recycle();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    // ---------------- 承诺期与统计 ----------------
+
+    /**
+     * 承诺期生效则强制为严格模式——即便用户绕过 UI 直接改了 SharedPreferences 也不放行。
+     * 承诺期到点后自动解除，恢复为预存模式。
+     */
+    private String effectiveMode(SharedPreferences prefs) {
+        String mode = prefs.getString(KEY_MODE, MODE_STRICT);
+        long until = prefs.getLong(KEY_LOCK_UNTIL, 0);
+        if (until > System.currentTimeMillis()) {
+            return MODE_STRICT;
+        }
+        if (MODE_STRICT.equals(mode) && until > 0) {
+            prefs.edit().putLong(KEY_LOCK_UNTIL, 0).apply();
+        }
+        return mode;
     }
 
     private void recordBlock(SharedPreferences prefs) {
@@ -195,8 +366,8 @@ public class GuardService extends AccessibilityService {
 
     private void resetState() {
         inChannels = false;
-        scrollCount = 0;
-        cancelTimers();
+        scrollAccumulator = 0;
+        leaveChannels();
     }
 
     private void cancelTimers() {
@@ -213,6 +384,7 @@ public class GuardService extends AccessibilityService {
     @Override
     public void onDestroy() {
         cancelTimers();
+        stopContentWatch();
         super.onDestroy();
     }
 

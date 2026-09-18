@@ -5,4 +5,5 @@
     android:accessibilityFlags="flagDefault"
     android:notificationTimeout="50"
     android:packageNames="com.tencent.mm"
+    android:canRetrieveWindowContent="true"
     android:description="@string/service_desc" />
