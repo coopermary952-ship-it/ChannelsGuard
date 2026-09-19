@@ -45,6 +45,8 @@ This tool targets exactly that one gesture: **it breaks the automatic chain of "
 | Multiple links in a row | Tapping different Channels links in a chat works normally — **only swiping exits** |
 | Adjustable sensitivity | Trigger the exit after 1 swipe (aggressive) / 2 (recommended) / 4 (relaxed) |
 | Back-action fallback | Some ROMs swallow the back action; it is re-sent up to three times |
+| Persistent notification | The service runs in the foreground with an ongoing notification (showing today's block count), which markedly lowers the chance of being killed |
+| Background-protection check | Shows whether the app is on the battery-optimisation whitelist, with a one-tap jump to grant it |
 | Blocking stats | Blocks today, total blocks, days guarded |
 | Debug log | Last 30 events, **one-tap copy** — so you can paste the log when reporting a problem |
 
@@ -68,7 +70,7 @@ The path varies slightly by manufacturer, usually:
 Settings → Accessibility → Installed services / Downloaded apps → ChannelsGuard → On
 ```
 
-Come back to the app; the top should read **Status: running ✔**.
+Come back to the app; the top should read **Status: running ✔**. (The button tries to open this app's accessibility details page directly instead of making you hunt through a list; ROMs that don't support it fall back to the list.)
 
 ### 3. Pick a mode
 
@@ -76,6 +78,20 @@ Come back to the app; the top should read **Status: running ✔**.
 - Prefer a daily quota over a hard cut → **Timed mode**, 10 minutes
 
 Done. Just use WeChat as usual; it watches in the background.
+
+### 4. Stop swiping it away from Recents (important)
+
+**Removing the app from Recents is the number one cause of "it stopped working".** On Chinese OEM ROMs (MIUI / ColorOS / OriginOS / EMUI, etc.), swiping the card away doesn't just kill the process — it puts the app into a **force-stopped** state, and Android disables every service of a force-stopped app, **including the system-granted accessibility service**. You then have to re-enable it in Settings. Stock Android does not behave this way.
+
+What to do instead:
+
+1. In Recents, **pull down or long-press this app's card and tap the lock icon** to pin it (gestures vary by brand)
+2. In system settings, grant it **auto-start + background activity + exclude it from power saving**
+3. Tap **Add to battery-optimisation whitelist** in the app, or confirm it already shows ✔
+
+After that you never need to open the app again. The persistent notification is your signal that it's alive.
+
+> Note: a third-party app **cannot enable the accessibility switch on your behalf** — that's an Android restriction. "Auto-recover when it drops" is therefore impossible; the goal is to keep it from dropping at all.
 
 ---
 
@@ -200,6 +216,12 @@ A: The service subscribes to only two event types (window state changes and view
 
 **Q: Could it get my account banned?**
 A: In normal mode it reads no on-screen text, modifies no WeChat data and injects no code: it reads public system window/scroll events and calls the standard system "back" action, the same principle as common accessibility utilities. With the experimental feature on, it additionally reads the visible text of the current screen for comparison — still no chat data, still no network. Accessibility tools carry platform-policy uncertainty; judge the risk yourself and use it only on your own device.
+
+**Q: Why does blocking stop working after I swipe the app away from Recents?**
+A: OEM ROMs put the app into a **force-stopped** state when you swipe its card away, and Android disables every service of a force-stopped app — **including the system-granted accessibility service**. So you have to turn it back on in Settings. That's manufacturer behaviour; an app cannot change it. Mitigations are in [step 4](#4-stop-swiping-it-away-from-recents-important): pin the Recents card, add the battery whitelist, allow background activity. Also, apps cannot enable the accessibility switch on your behalf, so "auto-recover" is not possible.
+
+**Q: Can I hide the notification in the status bar?**
+A: You can, but you shouldn't. That notification is the proof of a foreground service; it raises the process priority and measurably reduces the chance of being killed. Hiding the notification does not mean the process survives — many ROMs kill background processes without one first.
 
 **Q: I scrolled through five or six videos and nothing happened.**
 A: Run the [three steps](#three-steps-when-it-fails-to-block) above, starting from the debug log. Setting sensitivity to "1 (aggressive)" fixes it in most cases.

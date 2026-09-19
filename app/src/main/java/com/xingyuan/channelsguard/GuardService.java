@@ -1,7 +1,15 @@
 package com.xingyuan.channelsguard;
 
+import android.Manifest;
 import android.accessibilityservice.AccessibilityService;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
@@ -55,6 +63,10 @@ public class GuardService extends AccessibilityService {
     /** BACK 的补发时机：首次立即，之后 0.7s / 1.5s 各复核一次。 */
     private static final long[] BACK_RETRY_DELAYS = {0L, 700L, 1500L};
 
+    /** 常驻通知：让进程前台化，降低被系统回收的概率。 */
+    private static final int NOTIF_ID = 20260;
+    private static final String CHANNEL_ID = "guard_running";
+
     /** 内容指纹轮询间隔（仅实验功能开启时运行）。 */
     private static final long CONTENT_POLL_MS = 800;
     private static final int CONTENT_MAX_NODES = 220;
@@ -77,6 +89,73 @@ public class GuardService extends AccessibilityService {
     public void onCreate() {
         super.onCreate();
         handler = new Handler(Looper.getMainLooper());
+    }
+
+    @Override
+    protected void onServiceConnected() {
+        super.onServiceConnected();
+        startForegroundIfAllowed();
+    }
+
+    // ---------------- 常驻通知（提升存活率） ----------------
+
+    /**
+     * 把服务提升为前台服务。国产 ROM 清理后台时，前台进程的存活概率明显高于后台进程。
+     * 失败不影响拦截功能本身，只是少了这层保护。
+     */
+    private void startForegroundIfAllowed() {
+        try {
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(
+                    Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                return; // 未授权通知，前台通知会被系统丢弃，跳过即可
+            }
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm == null) {
+                return;
+            }
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID, "守门员运行状态", NotificationManager.IMPORTANCE_MIN);
+            channel.setDescription("显示视频号守门员正在运行及今日拦截次数");
+            nm.createNotificationChannel(channel);
+            startForeground(NOTIF_ID, buildNotification());
+        } catch (Throwable t) {
+            SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+            logEvent(p, "前台服务启动失败: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private Notification buildNotification() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
+        int todayCount = prefs.getInt(KEY_DAY_PREFIX + today, 0);
+        String mode = effectiveMode(prefs);
+        String modeText = MODE_TIMED.equals(mode) ? "限时模式"
+                : MODE_OFF.equals(mode) ? "已暂停" : "严格模式";
+
+        Intent intent = new Intent(this, MainActivity.class);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT
+                | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
+        PendingIntent pi = PendingIntent.getActivity(this, 1, intent, flags);
+
+        return new Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                .setContentTitle("视频号守门员运行中 · " + modeText)
+                .setContentText("今日已拦截 " + todayCount + " 次")
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .build();
+    }
+
+    /** 每次拦截后刷新通知里的计数。 */
+    private void refreshNotification() {
+        try {
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) {
+                nm.notify(NOTIF_ID, buildNotification());
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
@@ -182,6 +261,7 @@ public class GuardService extends AccessibilityService {
         recordBlock(prefs);
         long total = prefs.getLong(KEY_TOTAL_BLOCKS, 0);
         backOutWithRetry();
+        refreshNotification();
         toast(message + "（累计拦截 " + total + " 次）");
         // 指纹基准作废，待下一次进入时重新采样
         lastFingerprint = null;

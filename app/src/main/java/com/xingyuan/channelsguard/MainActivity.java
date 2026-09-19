@@ -1,5 +1,6 @@
 package com.xingyuan.channelsguard;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
@@ -7,9 +8,13 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.widget.Button;
@@ -56,6 +61,9 @@ public class MainActivity extends Activity {
     private final List<RadioButton> lockButtons = new ArrayList<>();
     private CheckBox contentWatchBox;
     private TextView lockNote;
+    private TextView batteryView;
+    private Button batteryButton;
+    private TextView keepAliveNote;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -84,10 +92,34 @@ public class MainActivity extends Activity {
         root.addView(statusView);
 
         Button openSettings = new Button(this);
-        openSettings.setText("去开启无障碍服务");
-        openSettings.setOnClickListener(v ->
-                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        openSettings.setText("开启 / 重新开启无障碍服务");
+        openSettings.setOnClickListener(v -> openAccessibilitySettings());
         root.addView(openSettings);
+
+        batteryView = new TextView(this);
+        batteryView.setTextSize(14);
+        batteryView.setPadding(0, dp(10), 0, 0);
+        root.addView(batteryView);
+
+        batteryButton = new Button(this);
+        batteryButton.setText("加入电池优化白名单（允许后台运行）");
+        batteryButton.setOnClickListener(v -> requestIgnoreBatteryOptimization());
+        root.addView(batteryButton);
+
+        keepAliveNote = new TextView(this);
+        keepAliveNote.setTextSize(13);
+        keepAliveNote.setTextColor(Color.DKGRAY);
+        keepAliveNote.setPadding(0, dp(8), 0, 0);
+        keepAliveNote.setText(
+                "别再划掉后台了：国产 ROM（MIUI / ColorOS / OriginOS / EMUI 等）把 App 从\n" +
+                "最近任务划掉时，会把它置为「强制停止」，无障碍服务会一起被停用，\n" +
+                "只能回到这里重新开一次。正确的做法是：\n" +
+                "· 在最近任务里把本 App 的卡片下拉或长按，点「锁」固定住；\n" +
+                "· 系统设置里允许自启动、允许后台运行、关闭省电策略；\n" +
+                "· 完成上面两项后，日常根本不需要再点开本 App。\n\n" +
+                "说明：第三方 App 无法用代码替你打开无障碍开关，这是系统的限制。"
+        );
+        root.addView(keepAliveNote);
 
         statsView = new TextView(this);
         statsView.setTextSize(16);
@@ -207,6 +239,7 @@ public class MainActivity extends Activity {
         restoreSavedState();
         bindListeners();
         updateVisibility();
+        requestNotificationPermission();
         setContentView(scroll);
     }
 
@@ -336,6 +369,7 @@ public class MainActivity extends Activity {
         refreshStatus();
         refreshStats();
         refreshDebugLog();
+        refreshBatteryStatus();
         updateVisibility();
     }
 
@@ -398,6 +432,68 @@ public class MainActivity extends Activity {
         return "剩余 " + minutes + " 分钟";
     }
 
+    /** 尝试直接打开本 App 的无障碍详情页；不支持的 ROM 回退到无障碍列表页。 */
+    private void openAccessibilitySettings() {
+        try {
+            // 该 action 没有公开的 Settings 常量，需用字符串
+            Intent detail = new Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS");
+            detail.setData(Uri.parse("package:" + getPackageName()));
+            detail.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(detail);
+        } catch (Throwable t) {
+            try {
+                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private boolean isIgnoringBatteryOptimization() {
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+    }
+
+    private void requestIgnoreBatteryOptimization() {
+        if (isIgnoringBatteryOptimization()) {
+            Toast.makeText(this, "已在白名单里，无需再设置", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (Throwable t) {
+            // 部分 ROM 没有这个授权页，改跳应用详情页
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        }
+    }
+
+    private void refreshBatteryStatus() {
+        boolean ok = isIgnoringBatteryOptimization();
+        if (ok) {
+            batteryView.setText("后台保护：已加入电池优化白名单 ✔");
+            batteryView.setTextColor(Color.rgb(0x1B, 0x7D, 0x32));
+            batteryButton.setEnabled(false);
+        } else {
+            batteryView.setText("后台保护：未加入白名单，进程容易被系统回收");
+            batteryView.setTextColor(Color.rgb(0xC6, 0x28, 0x28));
+            batteryButton.setEnabled(true);
+        }
+    }
+
+    /** Android 13+ 需要通知权限才能显示常驻通知（前台服务靠它提升存活率）。 */
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) {
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 100);
+        }
+    }
+
     private void refreshStatus() {
         String enabled = Settings.Secure.getString(getContentResolver(),
                 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
@@ -406,7 +502,9 @@ public class MainActivity extends Activity {
             statusView.setText("服务状态：运行中 ✔");
             statusView.setTextColor(Color.rgb(0x1B, 0x7D, 0x32));
         } else {
-            statusView.setText("服务状态：未开启（点下方按钮去开启）");
+            statusView.setText("服务状态：未开启 ✘\n"
+                    + "常见原因：你在最近任务里把本 App 划掉了，ROM 把它强制停止，"
+                    + "无障碍服务随之停用。点下方按钮重新开启一次。");
             statusView.setTextColor(Color.rgb(0xC6, 0x28, 0x28));
         }
     }
