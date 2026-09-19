@@ -6,7 +6,7 @@
 
 不需要 root、不需要 Xposed、不改微信、不联网、不申请任何运行时权限。
 
-**English**: A minimal Android accessibility service that auto-exits WeChat Channels (视频号) when you try to swipe to the next video — so you only watch the one you tapped.
+🌐 简体中文 | [English](./README_EN.md)
 
 ---
 
