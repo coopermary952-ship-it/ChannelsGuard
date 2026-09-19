@@ -22,6 +22,7 @@ No root, no Xposed, no WeChat modification, no network, no runtime permissions.
 - [Build it yourself](#build-it-yourself)
 - [Privacy](#privacy)
 - [Roadmap](#roadmap)
+- [Contact & feedback](#contact--feedback)
 - [License](#license)
 
 ---
@@ -288,6 +289,17 @@ ChannelsGuard/
 - [ ] Screenshots in the README
 
 ---
+
+## Contact & feedback
+
+Comments, ideas and suggestions are welcome — reach out:
+
+- **X**: [@star_source1w](https://x.com/star_source1w)
+- **WeChat**: `star_source1w`
+
+Issues and PRs on [the repository](https://github.com/coopermary952-ship-it/ChannelsGuard/issues) are equally welcome.
+
+> When reporting a problem, please paste the **debug log** from the app (tap **Copy debug log** at the bottom of the main screen). It makes diagnosis far faster — especially for "it didn't block" or "it blocked when it shouldn't have" cases.
 
 ## License
 
