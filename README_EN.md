@@ -186,10 +186,12 @@ Key parameters (all at the top of `GuardService.java`, tweak as you like):
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `ENTER_GRACE_MS` | 2000 | Layout/restore scrolls right after entering are ignored |
+| `ENTER_GRACE_MS` | 900 | The single scroll WeChat emits when restoring your last position on entry is not counted |
+| `GRACE_BURST_LIMIT` | 3 | Three swipes inside the grace window still mean deliberate scrolling, so they get blocked |
 | `KEY_SENSITIVITY` | 2 | Cumulative swipes needed to trigger exit (configurable in-app) |
 | `BLOCK_DEBOUNCE_MS` | 1200 | Minimum gap between two blocks, to avoid exiting repeatedly |
-| `BACK_RETRY_DELAYS` | 0 / 700 / 1500 ms | When the back action is re-sent, for ROMs that swallow it |
+| `STICKY_WINDOW_MS` | 8000 | Sticky window after a Channels hit, so half-screen/sub-layer windows don't break the guard |
+| `BACK_RETRY_DELAY_MS` | 600 | Wait before re-sending the back action; **skipped entirely** if leaving Channels was confirmed meanwhile |
 
 **Why cumulative counting instead of "4 scrolls within 1 second"?**
 v2.1 tightened the rule to "≥4 scrolls inside a 1-second window" to fix a false positive. On real devices that never holds: one swipe emits only 1–2 events, and several seconds of watching between swipes reset the counter every time — so scrolling through five or six videos triggered nothing.

@@ -56,8 +56,10 @@ public class GuardService extends AccessibilityService {
     static final String MODE_TIMED = "timed";
     static final String MODE_OFF = "off";
 
-    private static final long ENTER_GRACE_MS = 2000;       // 进入界面后的初始化宽限
+    private static final long ENTER_GRACE_MS = 900;        // 进入界面后的初始化宽限
+    private static final int GRACE_BURST_LIMIT = 3;        // 宽限期内连滑这么多次也算主动刷
     private static final long BLOCK_DEBOUNCE_MS = 1200;    // 两次拦截的最小间隔
+    private static final long BACK_RETRY_DELAY_MS = 600;   // 返回补发的等待时间
     private static final long WARN_BEFORE_MS = 60_000;
     private static final int DEBUG_LOG_MAX = 30;
     private static final int RAW_LOG_MAX = 60;
@@ -68,9 +70,6 @@ public class GuardService extends AccessibilityService {
      * 一旦收到明确的「已离开」类名（聊天列表、桌面等）立即清零，避免误拦聊天。
      */
     private static final long STICKY_WINDOW_MS = 8000;
-
-    /** BACK 的补发时机：首次立即，之后 0.7s / 1.5s 各复核一次。 */
-    private static final long[] BACK_RETRY_DELAYS = {0L, 700L, 1500L};
 
     /** 常驻通知：让进程前台化，降低被系统回收的概率。 */
     private static final int NOTIF_ID = 20260;
@@ -88,6 +87,7 @@ public class GuardService extends AccessibilityService {
     private int loggedScrolls = 0;       // 已写入调试日志的滚动条数（避免刷屏）
     private long lastFinderHitMs = 0;    // 最近一次命中视频号类名的时间
     private long lastRawScrollLogMs = 0; // 原始日志中滚动行的节流时间
+    private boolean leftConfirmed = false; // 已收到「明确离开视频号」的窗口事件
     private String lastFingerprint = null;
     private boolean fingerprintBaselined = false;
 
@@ -198,6 +198,7 @@ public class GuardService extends AccessibilityService {
             } else if (isClearlyOutside(cls)) {
                 // 明确回到了聊天/桌面等地方：解除粘性窗口，避免误拦聊天列表
                 lastFinderHitMs = 0;
+                leftConfirmed = true;
                 if (inChannels) {
                     logEvent(prefs, "离开视频号: " + cls);
                     leaveChannels();
@@ -273,9 +274,6 @@ public class GuardService extends AccessibilityService {
 
     private void onStrictScroll(SharedPreferences prefs, AccessibilityEvent event) {
         long now = System.currentTimeMillis();
-        if (now - enterTimeMs < ENTER_GRACE_MS) {
-            return; // 初始化阶段的滚动（含第二个链接的状态恢复）不介入
-        }
 
         int dy = 0;
         try {
@@ -286,15 +284,19 @@ public class GuardService extends AccessibilityService {
 
         scrollAccumulator++;
         int sensitivity = prefs.getInt(KEY_SENSITIVITY, 2);
+        // 刚进入界面时微信会自己恢复浏览位置产生滚动，用短宽限期吸收；
+        // 但若在宽限期内就连滑多次，说明是你在主动刷，同样要拦。
+        boolean inGrace = now - enterTimeMs < ENTER_GRACE_MS;
+        int limit = inGrace ? GRACE_BURST_LIMIT : sensitivity;
 
         // 少量滚动写入日志用于排查，超过 6 条后只在临近阈值时记录，避免刷屏
-        if (loggedScrolls < 6 || scrollAccumulator >= sensitivity - 1) {
+        if (loggedScrolls < 6 || scrollAccumulator >= limit - 1) {
             loggedScrolls++;
-            logEvent(prefs, "滑动 ΔY=" + dy + " 第" + scrollAccumulator + "次/阈值" + sensitivity);
+            logEvent(prefs, "滑动 ΔY=" + dy + " 第" + scrollAccumulator + "次/阈值" + limit
+                    + (inGrace ? "(宽限期内连滑)" : ""));
         }
 
-        boolean enough = scrollAccumulator >= sensitivity;
-        if (!enough) {
+        if (scrollAccumulator < limit) {
             return;
         }
         if (now - lastBlockMs < BLOCK_DEBOUNCE_MS) {
@@ -312,7 +314,7 @@ public class GuardService extends AccessibilityService {
     private void blockAndExit(SharedPreferences prefs, String message) {
         recordBlock(prefs);
         long total = prefs.getLong(KEY_TOTAL_BLOCKS, 0);
-        backOutWithRetry();
+        backOut(prefs);
         refreshNotification();
         toast(message + "（累计拦截 " + total + " 次）");
         // 指纹基准作废，待下一次进入时重新采样
@@ -321,19 +323,23 @@ public class GuardService extends AccessibilityService {
     }
 
     /**
-     * 连续发返回键并在 0.7s / 1.5s 后复核：部分 ROM 或横屏/手势状态下，
-     * 单次 GLOBAL_ACTION_BACK 可能被吞掉，导致看起来"没退出"。
+     * 发送返回键，并在 600ms 后补发一次。
+     *
+     * 补发是为了对付"部分 ROM 会吞掉第一次返回"；但补发本身有风险——
+     * 如果第一次已经退出了视频号，补发就会把聊天页也一并退出（甚至退回桌面）。
+     * 因此补发前必须确认「这期间没有收到已离开视频号的窗口事件」，
+     * 并且当前仍处于视频号状态；任何一条不满足就放弃补发。
      */
-    private void backOutWithRetry() {
-        for (int i = 0; i < BACK_RETRY_DELAYS.length; i++) {
-            final boolean checkState = i > 0;
-            handler.postDelayed(() -> {
-                if (checkState && !inChannels) {
-                    return; // 已经离开视频号，不需要补发
-                }
-                performGlobalAction(GLOBAL_ACTION_BACK);
-            }, BACK_RETRY_DELAYS[i]);
-        }
+    private void backOut(SharedPreferences prefs) {
+        leftConfirmed = false;
+        performGlobalAction(GLOBAL_ACTION_BACK);
+        handler.postDelayed(() -> {
+            if (leftConfirmed || !inChannels || !isSticky()) {
+                return; // 已经离开视频号（或状态不可靠）→ 绝不补发
+            }
+            logEvent(prefs, "补发返回：首次未生效");
+            performGlobalAction(GLOBAL_ACTION_BACK);
+        }, BACK_RETRY_DELAY_MS);
     }
 
     // ---------------- 限时模式 ----------------
@@ -529,6 +535,7 @@ public class GuardService extends AccessibilityService {
         inChannels = false;
         scrollAccumulator = 0;
         lastFinderHitMs = 0;
+        leftConfirmed = false;
         leaveChannels();
     }
 
