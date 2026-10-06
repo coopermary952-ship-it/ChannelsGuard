@@ -49,6 +49,7 @@ public class GuardService extends AccessibilityService {
     static final String KEY_FIRST_DATE = "first_date";
     static final String KEY_DAY_PREFIX = "count_";    // count_yyyy-MM-dd
     static final String KEY_DEBUG_LOG = "debug_log";
+    static final String KEY_RAW_LOG = "raw_log";          // 原始事件日志（排障用）
     static final String KEY_LOCK_UNTIL = "lock_until"; // 严格模式承诺期截止时间（毫秒）
 
     static final String MODE_STRICT = "strict";
@@ -59,6 +60,14 @@ public class GuardService extends AccessibilityService {
     private static final long BLOCK_DEBOUNCE_MS = 1200;    // 两次拦截的最小间隔
     private static final long WARN_BEFORE_MS = 60_000;
     private static final int DEBUG_LOG_MAX = 30;
+    private static final int RAW_LOG_MAX = 60;
+
+    /**
+     * 「粘性窗口」：命中视频号后的一小段时间内，即使收到指向其它类名的窗口事件
+     * （微信滑动切视频时偶尔会抛出一个半屏/子层窗口），也仍按视频号处理。
+     * 一旦收到明确的「已离开」类名（聊天列表、桌面等）立即清零，避免误拦聊天。
+     */
+    private static final long STICKY_WINDOW_MS = 8000;
 
     /** BACK 的补发时机：首次立即，之后 0.7s / 1.5s 各复核一次。 */
     private static final long[] BACK_RETRY_DELAYS = {0L, 700L, 1500L};
@@ -77,6 +86,8 @@ public class GuardService extends AccessibilityService {
     private long lastBlockMs = 0;
     private int scrollAccumulator = 0;   // 进入视频号后的累计滚动次数
     private int loggedScrolls = 0;       // 已写入调试日志的滚动条数（避免刷屏）
+    private long lastFinderHitMs = 0;    // 最近一次命中视频号类名的时间
+    private long lastRawScrollLogMs = 0; // 原始日志中滚动行的节流时间
     private String lastFingerprint = null;
     private boolean fingerprintBaselined = false;
 
@@ -176,20 +187,61 @@ public class GuardService extends AccessibilityService {
         int type = event.getEventType();
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             String cls = String.valueOf(event.getClassName());
-            boolean nowInChannels = cls.toLowerCase().contains("finder");
-            if (nowInChannels && !inChannels) {
-                onEnterChannels(prefs, mode, cls);
-            } else if (!nowInChannels && inChannels) {
-                logEvent(prefs, "离开视频号: " + cls);
-                leaveChannels();
+            logRaw(prefs, "WIN  " + cls);
+
+            boolean nowInChannels = isFinderClass(cls);
+            if (nowInChannels) {
+                lastFinderHitMs = System.currentTimeMillis();
+                if (!inChannels) {
+                    onEnterChannels(prefs, mode, cls);
+                }
+            } else if (isClearlyOutside(cls)) {
+                // 明确回到了聊天/桌面等地方：解除粘性窗口，避免误拦聊天列表
+                lastFinderHitMs = 0;
+                if (inChannels) {
+                    logEvent(prefs, "离开视频号: " + cls);
+                    leaveChannels();
+                }
+            } else if (inChannels) {
+                // 未命中视频号但也不明确在外面 —— 多半是微信内部的半屏/子层，
+                // 保持状态不动，靠粘性窗口兜住随后到来的滚动事件
+                logEvent(prefs, "视频号内的其它窗口(保持守护): " + cls);
             }
-            inChannels = nowInChannels;
-        } else if (type == AccessibilityEvent.TYPE_VIEW_SCROLLED && inChannels) {
+            inChannels = nowInChannels || (!isClearlyOutside(cls) && isSticky());
+        } else if (type == AccessibilityEvent.TYPE_VIEW_SCROLLED && (inChannels || isSticky())) {
             if (!MODE_STRICT.equals(mode)) {
                 return; // 限时模式下允许自由滑动，到点统一退出
             }
+            int dy = 0;
+            try {
+                dy = event.getScrollDeltaY();
+            } catch (Throwable ignored) {
+            }
+            logRaw(prefs, "SCRL " + event.getClassName() + " dy=" + dy);
             onStrictScroll(prefs, event);
         }
+    }
+
+    /** 视频号界面类名特征。微信改内部类名时，这里是唯一需要跟着改的地方。 */
+    private boolean isFinderClass(String cls) {
+        String c = cls == null ? "" : cls.toLowerCase();
+        return c.contains("finder") || c.contains("channels");
+    }
+
+    /** 明确已在视频号之外：聊天列表、通讯录、发现、桌面等。 */
+    private boolean isClearlyOutside(String cls) {
+        String c = cls == null ? "" : cls.toLowerCase();
+        return c.contains("chatting")
+                || c.contains("conversation")
+                || c.contains("launcher")
+                || c.contains("contacts")
+                || c.contains("discover")
+                || c.contains("com.tencent.mm.ui.launcher");
+    }
+
+    private boolean isSticky() {
+        return lastFinderHitMs > 0
+                && System.currentTimeMillis() - lastFinderHitMs <= STICKY_WINDOW_MS;
     }
 
     // ---------------- 进入 / 离开 ----------------
@@ -444,9 +496,39 @@ public class GuardService extends AccessibilityService {
         prefs.edit().putString(KEY_DEBUG_LOG, next).apply();
     }
 
+    /**
+     * 追加一条原始事件日志。窗口类名全量记录——这是「微信更新后失效」时唯一能
+     * 定位问题的东西，拿到它就不用靠猜。
+     */
+    private void logRaw(SharedPreferences prefs, String msg) {
+        try {
+            long now = System.currentTimeMillis();
+            if (msg.startsWith("SCRL") && now - lastRawScrollLogMs < 300) {
+                return; // 滚动事件很密，节流避免频繁写盘
+            }
+            if (msg.startsWith("SCRL")) {
+                lastRawScrollLogMs = now;
+            }
+            String time = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
+            String old = prefs.getString(KEY_RAW_LOG, "");
+            String next = time + " " + msg + "\n" + old;
+            String[] lines = next.split("\n");
+            if (lines.length > RAW_LOG_MAX) {
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < RAW_LOG_MAX; i++) {
+                    sb.append(lines[i]).append("\n");
+                }
+                next = sb.toString();
+            }
+            prefs.edit().putString(KEY_RAW_LOG, next).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void resetState() {
         inChannels = false;
         scrollAccumulator = 0;
+        lastFinderHitMs = 0;
         leaveChannels();
     }
 

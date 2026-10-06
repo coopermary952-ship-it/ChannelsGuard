@@ -50,6 +50,7 @@ This tool targets exactly that one gesture: **it breaks the automatic chain of "
 | Background-protection check | Shows whether the app is on the battery-optimisation whitelist, with a one-tap jump to grant it |
 | Blocking stats | Blocks today, total blocks, days guarded |
 | Debug log | Last 30 events, **one-tap copy** — so you can paste the log when reporting a problem |
+| Raw event log | Records every window class name and scroll event. **When a WeChat update breaks detection, this log makes the fix precise instead of guesswork** |
 
 ---
 
@@ -137,6 +138,17 @@ This is not just a UI trick: even if you bypass the interface and edit the local
 2. **Log exists but no exit** → events do arrive, just below threshold. Set sensitivity to **1 (aggressive)**.
 3. **No log at all** → your WeChat build doesn't emit scroll events. Enable **Content-change detection** (experimental): it periodically compares the visible text on screen and exits when the text as a whole changes.
 
+### Broken after a WeChat or system update?
+
+This is the case most likely to waste your time. Check in this order:
+
+1. **Look at the service status first.** If it says not running, re-enable it — system updates often reset the accessibility switch.
+2. **Check whether the debug log contains an "entered Channels" line.**
+   - **No** → WeChat renamed its internal classes and the detection rules need updating. Copy the **Raw event log** and send it over: it contains the real class names, so the rules can be fixed on evidence instead of guesswork.
+   - **Yes** → detection is fine; check for "swipe" lines and follow the three steps above.
+
+> Since v2.5 the app ships with a **raw event log** (every window class name and scroll event). Its purpose is simple: the next time a WeChat update breaks detection, one log is enough to locate the problem without trial and error.
+
 > The 12-hour and 3-day options were removed on request — **the shortest commitment is now 1 day**.
 
 ---
@@ -197,7 +209,7 @@ All real and unsolved — stated up front:
    It runs on a `Handler` inside the service; if the process is killed by battery optimisation it restarts the countdown. A proper fix needs a foreground service plus `AlarmManager`.
 
 3. **It may break after a major WeChat update**
-   "Class name contains `finder`" is WeChat's internal implementation with no public guarantee. If it stops working one day, the in-app debug log tells you whether it failed to *enter* or failed to *block*.
+   "Class name contains `finder` or `channels`" is WeChat's internal implementation with no public guarantee. Since v2.5 the app **records every real window class name**, so when detection breaks you can send the raw log and the rules can be updated precisely. An 8-second "sticky window" was also added, so the half-screen/sub-layer windows WeChat throws while you swipe no longer knock the guard out of its state.
 
 4. **It cannot stop deliberate circumvention**
    Turning off the accessibility service, uninstalling, or clearing app data all defeat it. That's an Android boundary, not a bug in this app.

@@ -48,6 +48,7 @@ public class MainActivity extends Activity {
     private TextView statusView;
     private TextView statsView;
     private TextView debugView;
+    private TextView rawLogView;
     private TextView lockInfoView;
     private RadioGroup modeGroup;
     private RadioButton rbStrict;
@@ -212,6 +213,20 @@ public class MainActivity extends Activity {
         copyLog.setOnClickListener(v -> copyDebugLog());
         root.addView(copyLog);
 
+        TextView rawLabel = sectionLabel("原始事件日志（微信更新后失效时，把这个发出去）");
+        root.addView(rawLabel);
+
+        rawLogView = new TextView(this);
+        rawLogView.setTextSize(11);
+        rawLogView.setTextColor(Color.rgb(0x55, 0x55, 0x55));
+        rawLogView.setTypeface(Typeface.MONOSPACE);
+        root.addView(rawLogView);
+
+        Button copyRaw = new Button(this);
+        copyRaw.setText("复制原始日志");
+        copyRaw.setOnClickListener(v -> copyRawLog());
+        root.addView(copyRaw);
+
         TextView howto = new TextView(this);
         howto.setTextSize(14);
         howto.setTextColor(Color.DKGRAY);
@@ -221,6 +236,12 @@ public class MainActivity extends Activity {
                 "1. 点击上方按钮，在系统无障碍设置里找到「视频号守门员」并开启。\n" +
                 "2. 回到本页确认状态显示「服务运行中」。\n" +
                 "3. 选好模式后，在微信里点开视频号链接即可。\n\n" +
+                "微信/系统更新后突然失效怎么办：\n" +
+                "① 先看「服务状态」是不是运行中，不是就点按钮重新开一次；\n" +
+                "② 看调试日志里有没有「进入视频号」——没有说明微信改了内部类名，\n" +
+                "   把下方「原始事件日志」复制出来发出去即可精准适配；\n" +
+                "③ 有「进入视频号」但没「滑动」记录 → 灵敏度调「1 次最猛」；\n" +
+                "   滑动记录都没有 → 勾选「画面内容变化检测」兜底。\n\n" +
                 "拦不住时这样排查：\n" +
                 "· 看下方日志里有没有「滑动 ΔY=…」记录。\n" +
                 "· 有记录但没退出 → 把灵敏度调到「1 次最猛」。\n" +
@@ -369,6 +390,7 @@ public class MainActivity extends Activity {
         refreshStatus();
         refreshStats();
         refreshDebugLog();
+        refreshRawLog();
         refreshBatteryStatus();
         updateVisibility();
     }
@@ -532,6 +554,37 @@ public class MainActivity extends Activity {
     private void refreshDebugLog() {
         String log = prefs.getString(GuardService.KEY_DEBUG_LOG, "");
         debugView.setText(log.isEmpty() ? "（暂无记录）" : log.trim());
+    }
+
+    /** 原始日志只显示最近若干行，全部内容通过复制按钮取。 */
+    private void refreshRawLog() {
+        String log = prefs.getString(GuardService.KEY_RAW_LOG, "");
+        if (log.isEmpty()) {
+            rawLogView.setText("（暂无记录）");
+            return;
+        }
+        String[] lines = log.trim().split("\n");
+        int show = Math.min(lines.length, 12);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < show; i++) {
+            sb.append(lines[i]).append("\n");
+        }
+        if (lines.length > show) {
+            sb.append("… 共 ").append(lines.length).append(" 行，点下方按钮复制全部");
+        }
+        rawLogView.setText(sb.toString().trim());
+    }
+
+    private void copyRawLog() {
+        String log = prefs.getString(GuardService.KEY_RAW_LOG, "");
+        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null) {
+            Toast.makeText(this, "无法访问剪贴板", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        cm.setPrimaryClip(ClipData.newPlainText("ChannelsGuard-raw-log",
+                log.isEmpty() ? "（暂无记录）" : log.trim()));
+        Toast.makeText(this, "原始日志已复制", Toast.LENGTH_SHORT).show();
     }
 
     private void copyDebugLog() {
