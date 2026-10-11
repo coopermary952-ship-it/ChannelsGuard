@@ -18,7 +18,6 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -60,7 +59,6 @@ public class MainActivity extends Activity {
     private RadioGroup sensGroup;
     private LinearLayout lockRows;
     private final List<RadioButton> lockButtons = new ArrayList<>();
-    private CheckBox contentWatchBox;
     private TextView lockNote;
     private TextView batteryView;
     private Button batteryButton;
@@ -193,12 +191,6 @@ public class MainActivity extends Activity {
         }
         root.addView(sensGroup);
 
-        contentWatchBox = new CheckBox(this);
-        contentWatchBox.setText("实验：画面内容变化检测（滑动拦不住时才开）");
-        contentWatchBox.setTextSize(14);
-        contentWatchBox.setPadding(0, dp(16), 0, 0);
-        root.addView(contentWatchBox);
-
         TextView debugLabel = sectionLabel("调试日志（拦截记录，用于排查问题）");
         root.addView(debugLabel);
 
@@ -241,12 +233,8 @@ public class MainActivity extends Activity {
                 "② 看调试日志里有没有「进入视频号」——没有说明微信改了内部类名，\n" +
                 "   把下方「原始事件日志」复制出来发出去即可精准适配；\n" +
                 "③ 有「进入视频号」但没「滑动」记录 → 灵敏度调「1 次最猛」；\n" +
-                "   滑动记录都没有 → 勾选「画面内容变化检测」兜底。\n\n" +
-                "拦不住时这样排查：\n" +
-                "· 看下方日志里有没有「滑动 ΔY=…」记录。\n" +
-                "· 有记录但没退出 → 把灵敏度调到「1 次最猛」。\n" +
-                "· 完全没有记录 → 你的微信不发出滚动事件，\n" +
-                "   勾选上方「画面内容变化检测」再试。\n\n" +
+                "④ 滑动记录都没有 → 说明你的微信不发标准滚动事件，\n" +
+                "   本工具出于隐私考虑不读取界面内容，只能等微信适配或反馈。\n\n" +
                 "已知限制：\n" +
                 "· 严格模式下，快速滑动评论区也可能触发退出。\n" +
                 "· 承诺期只能锁定 App 内的模式切换；\n" +
@@ -345,7 +333,6 @@ public class MainActivity extends Activity {
                 rb.setChecked(true);
             }
         }
-        contentWatchBox.setChecked(prefs.getBoolean(GuardService.KEY_CONTENT_WATCH, false));
     }
 
     private void bindListeners() {
@@ -380,8 +367,6 @@ public class MainActivity extends Activity {
             }
         });
 
-        contentWatchBox.setOnCheckedChangeListener((buttonView, isChecked) ->
-                prefs.edit().putBoolean(GuardService.KEY_CONTENT_WATCH, isChecked).apply());
     }
 
     @Override

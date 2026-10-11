@@ -10,8 +10,37 @@ android {
         applicationId "com.xingyuan.channelsguard"
         minSdk 26
         targetSdk 34
-        versionCode 8
-        versionName "2.6"
+        versionCode 9
+        versionName "2.7"
+    }
+
+    signingConfigs {
+        release {
+            // 口令绝不写进仓库（这是公开项目）。从 ~/.gradle/gradle.properties
+            // 或同名环境变量读取，缺失时直接报错，避免误用弱默认口令。
+            def storePath = project.findProperty("CHANNELSGUARD_KEYSTORE")
+                    ?: (System.getProperty("user.home") + "/.android/channelsguard-release.jks")
+            def storePwd = project.findProperty("CHANNELSGUARD_STORE_PASSWORD")
+            def keyPwd = project.findProperty("CHANNELSGUARD_KEY_PASSWORD") ?: storePwd
+            if (!storePwd) {
+                throw new GradleException("缺少签名口令：请在 ~/.gradle/gradle.properties 中设置 " +
+                        "CHANNELSGUARD_STORE_PASSWORD（可选 CHANNELSGUARD_KEYSTORE / CHANNELSGUARD_KEY_PASSWORD），详见 README")
+            }
+            storeFile file(storePath)
+            storePassword storePwd
+            keyAlias "channelsguard"
+            keyPassword keyPwd
+            enableV1Signing true
+            enableV2Signing true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false      // 自用工具，不做混淆以保证行为可验证
+            signingConfig signingConfigs.release
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
     }
 
     compileOptions {
@@ -20,15 +49,17 @@ android {
     }
 }
 
-// 每次编译后自动生成带版本号的 APK 副本，如 ChannelsGuard-v2.0-debug.apk
-tasks.register("copyVersionedApk", Copy) {
-    def vName = android.defaultConfig.versionName
-    from(layout.buildDirectory.dir("outputs/apk/debug")) {
-        include("app-debug.apk")
-        rename { "ChannelsGuard-v${vName}-debug.apk" }
+// 每次编译后自动生成带版本号的 APK 副本：dist/ChannelsGuard-v<version>-<type>.apk
+["debug", "release"].each { type ->
+    tasks.register("copyVersionedApk${type.capitalize()}", Copy) {
+        def vName = android.defaultConfig.versionName
+        from(layout.buildDirectory.dir("outputs/apk/${type}")) {
+            include("app-${type}.apk")
+            rename { "ChannelsGuard-v${vName}-${type}.apk" }
+        }
+        into(rootProject.layout.projectDirectory.dir("dist"))
     }
-    into(rootProject.layout.projectDirectory.dir("dist"))
-}
-tasks.matching { it.name == "assembleDebug" }.configureEach {
-    finalizedBy("copyVersionedApk")
+    tasks.matching { it.name == "assemble${type.capitalize()}" }.configureEach {
+        finalizedBy("copyVersionedApk${type.capitalize()}")
+    }
 }

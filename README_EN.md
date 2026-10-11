@@ -129,14 +129,13 @@ This is not just a UI trick: even if you bypass the interface and edit the local
 6. **Strict commitment period** — shown when Strict is selected and not yet locked
 7. **Timed duration** — shown when Timed is selected
 8. **Sensitivity** — shown in Strict mode; how many swipes count as "you're scrolling"
-9. **Content-change detection** — experimental fallback, off by default
 10. **Debug log** — last 30 events + a **Copy debug log** button
 
 ### Three steps when it fails to block
 
 1. Open the **Debug log** at the bottom and look for lines like `滑动 ΔY=… 第n次` (`swipe ΔY=… #n`).
 2. **Log exists but no exit** → events do arrive, just below threshold. Set sensitivity to **1 (aggressive)**.
-3. **No log at all** → your WeChat build doesn't emit scroll events. Enable **Content-change detection** (experimental): it periodically compares the visible text on screen and exits when the text as a whole changes.
+3. **No log at all** → your WeChat build doesn't emit standard scroll events. Since v2.7 this app deliberately **does not read screen content**; send us the raw log and we'll find another way.
 
 ### Broken after a WeChat or system update?
 
@@ -219,8 +218,8 @@ All real and unsolved — stated up front:
 5. **Only affects package `com.tencent.mm` (WeChat)**
    Other short-video apps are not whitelisted, and are not planned.
 
-6. **The experimental content-change detection can misfire**
-   It compares visible text to decide whether the video changed, so a like-count tick or comments loading can cause a false exit. It is a fallback, off by default, recommended only after you confirm no scroll events arrive.
+6. **Blocking fails if WeChat emits no scroll events at all**
+   To tighten privacy, v2.7 removed the "read screen content" fallback (see Privacy). If your WeChat build never sends `typeViewScrolled`, interception won't work — send the raw log and we'll adapt.
 
 ---
 
@@ -230,7 +229,7 @@ All real and unsolved — stated up front:
 A: The service subscribes to only two event types (window state changes and view scrolls) from one package, and intervenes only on screens judged to be Channels. Likes, typing comments and pausing playback emit no scroll events, so they never trigger a block — though fast scrolling in comments can be misjudged (see limitation 1).
 
 **Q: Could it get my account banned?**
-A: In normal mode it reads no on-screen text, modifies no WeChat data and injects no code: it reads public system window/scroll events and calls the standard system "back" action, the same principle as common accessibility utilities. With the experimental feature on, it additionally reads the visible text of the current screen for comparison — still no chat data, still no network. Accessibility tools carry platform-policy uncertainty; judge the risk yourself and use it only on your own device.
+A: **It cannot read screen content even in principle** — `canRetrieveWindowContent` is not requested, so Android never grants that capability. It also modifies no WeChat data and injects no code: it reads public window-class and scroll events, and calls the standard system "back" action. Accessibility tools carry platform-policy uncertainty; judge the risk yourself and use it only on your own device.
 
 **Q: Why does blocking stop working after I swipe the app away from Recents?**
 A: OEM ROMs put the app into a **force-stopped** state when you swipe its card away, and Android disables every service of a force-stopped app — **including the system-granted accessibility service**. So you have to turn it back on in Settings. That's manufacturer behaviour; an app cannot change it. Mitigations are in [step 4](#4-stop-swiping-it-away-from-recents-important): pin the Recents card, add the battery whitelist, allow background activity. Also, apps cannot enable the accessibility switch on your behalf, so "auto-recover" is not possible.
@@ -263,10 +262,15 @@ cd ChannelsGuard
 # point local.properties at your SDK
 echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
 
-./gradlew assembleDebug
+# ship the release variant (debuggable=false, properly signed)
+./gradlew assembleRelease
 ```
 
-Output lands in `app/build/outputs/apk/debug/`, and a versioned copy is written to `dist/ChannelsGuard-v<version>-debug.apk`.
+Output lands in `app/build/outputs/apk/release/`, and a versioned copy is written to `dist/ChannelsGuard-v<version>-release.apk`.
+
+> ⚠️ **Why release is mandatory**: AGP force-injects `android:debuggable=true` into debug builds — writing `false` in the manifest or using `tools:replace` does **not** work (verified experimentally). A debuggable APK lets anyone attach a debugger over adb and read your process memory, so **never distribute the debug variant**.
+>
+> The signing key lives at `~/.android/channelsguard-release.jks`, with the credentials in `app/build.gradle` under `signingConfigs.release`. **Losing this key means you can no longer publish upgradeable builds** — back it up.
 
 Project layout:
 
@@ -284,14 +288,17 @@ ChannelsGuard/
 
 ## Privacy
 
+- **It structurally cannot read screen content**
+  The accessibility config **does not request `canRetrieveWindowContent`**. This isn't "we choose not to read" — Android simply doesn't grant the app that capability, so even a reverse-engineered, tampered build cannot read your chats, contacts or Moments.
+- **Only two event types, WeChat only**: `typeWindowStateChanged` (window class name) and `typeViewScrolled`. No click events, no content-change events, no other apps (the whitelist is pinned to `com.tencent.mm`).
 - **No network**: no network permission in the manifest, no network calls in the code — uploading is physically impossible.
-- **No screen text by default**: regular blocking only reads the *system-level signal* that a scroll happened. No text is read.
-- **⚠️ The only exception, and it's off by default**: with the experimental **Content-change detection** enabled, the app walks the visible text of the current screen every 800 ms and builds a fingerprint **in memory** to compare against the previous one. The fingerprint is never written to disk, never stored in `SharedPreferences`, and never sent anywhere. If you don't tick that box, that code never runs.
-- **WeChat only**: the accessibility config hard-codes `android:packageNames="com.tencent.mm"`; events from other apps are not received at all.
-- **Local data only**: mode, commitment, block stats and debug log live in the app's private `SharedPreferences`, with `allowBackup="false"` — clearing on uninstall.
+- **No device identifiers**: no IMEI, Android ID, location, contacts, camera, microphone or clipboard-read APIs anywhere.
+- **Nothing leaks on a locked screen**: no Toasts while the screen is locked, and the notification uses privacy mode — the lock screen shows only "ChannelsGuard · running"; mode and block counts appear after you unlock.
+- **Local data only**: mode, commitment, stats and logs live in the app's private `SharedPreferences`, with `allowBackup="false"` (blocks adb backup), cleared on uninstall.
+- **The APK can't be debugged**: released builds are properly signed (v2 signature scheme) with `debuggable=false`, so nobody who gets the APK can attach a debugger and read your process memory.
 - **No third-party SDKs**: depends on the Android SDK alone. No analytics, no push, no ads.
 
----
+> **History**: v2.3–v2.6 shipped an experimental "content-change detection" switch that walked the visible text of the WeChat UI to build a fingerprint. It only ran when you opted in and the fingerprint never left memory, but it still **gave the app the ability to read text across all of WeChat**. v2.7 removes that capability at the permission level.
 
 ## Roadmap
 
