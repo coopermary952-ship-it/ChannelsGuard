@@ -48,6 +48,8 @@ This tool targets exactly that one gesture: **it breaks the automatic chain of "
 | Back-action fallback | Some ROMs swallow the back action; it is re-sent up to three times |
 | Persistent notification | The service runs in the foreground with an ongoing notification (showing today's block count), which markedly lowers the chance of being killed |
 | Background-protection check | Shows whether the app is on the battery-optimisation whitelist, with a one-tap jump to grant it |
+| Startup-manager shortcut | One-tap jump to Huawei's "App launch manager" to enable auto-start, secondary launch and background activity |
+| Last-stopped timestamp | Records when the service was last killed by the system, so you can see at a glance whether it was cleaned from the background |
 | Blocking stats | Blocks today, total blocks, days guarded |
 | Debug log | Last 30 events, **one-tap copy** — so you can paste the log when reporting a problem |
 | Raw event log | Records every window class name and scroll event. **When a WeChat update breaks detection, this log makes the fix precise instead of guesswork** |
@@ -83,19 +85,20 @@ Done. Just use WeChat as usual; it watches in the background.
 
 ### 4. Stop swiping it away from Recents (important)
 
-**Removing the app from Recents is the number one cause of "it stopped working".** On Chinese OEM ROMs (MIUI / ColorOS / OriginOS / EMUI, etc.), swiping the card away doesn't just kill the process — it puts the app into a **force-stopped** state, and Android disables every service of a force-stopped app, **including the system-granted accessibility service**. You then have to re-enable it in Settings. Stock Android does not behave this way.
+**Removing the app from Recents is the number one cause of "it stopped working".** Huawei states this officially: after clearing background apps **or rebooting the device**, third-party apps get cleaned up, their services can't start, and the system therefore shows the accessibility switch as off — **this is system behaviour, not a bug in this app** ([Huawei's official guidance](https://consumer.huawei.com/cn/support/how-to/detail-troubleshooting/zh-cn00410039)).
 
-What to do instead:
+The three steps Huawei itself recommends:
 
-1. In Recents, **pull down or long-press this app's card and tap the lock icon** to pin it (gestures vary by brand)
-2. In system settings, grant it **auto-start + background activity + exclude it from power saving**
-3. Tap **Add to battery-optimisation whitelist** in the app, or confirm it already shows ✔
+1. **Lock the app card**: in Recents, pull down the ChannelsGuard card and tap the **lock icon**. A locked app survives "Clear all".
+2. **App launch manager → manual management → all three switches on**:
+   - HarmonyOS 4.x: **Phone Manager → App launch manager**
+   - HarmonyOS 5.x / Next: **Settings → Apps → App launch manager**
+   - Find this app → turn **off "Auto management"** → in the dialog, enable **Auto-launch, Secondary launch and Background activity**
+3. **Add to the battery-optimisation whitelist**: use the button in the app.
 
-After that you never need to open the app again. The persistent notification is your signal that it's alive.
+> ⚠️ **Uninstalling wipes all of the above.** Redo all three steps after installing a new version. Note that on Huawei devices a reboot also switches off third-party accessibility services, so you'll need to re-enable it after every restart.
 
-> Note: a third-party app **cannot enable the accessibility switch on your behalf** — that's an Android restriction. "Auto-recover when it drops" is therefore impossible; the goal is to keep it from dropping at all.
-
----
+> Extra: a third-party app **cannot enable the accessibility switch for you** — that's an Android restriction, so "auto-recover after being dropped" is impossible; the goal is to keep it from being dropped. Since v2.8 the app records when the service is stopped, and the main screen shows "Last stopped: MM-DD HH:MM" so you don't have to guess.
 
 ## Usage
 

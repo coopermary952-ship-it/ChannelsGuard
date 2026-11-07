@@ -50,6 +50,7 @@ public class GuardService extends AccessibilityService {
     static final String KEY_DAY_PREFIX = "count_";    // count_yyyy-MM-dd
     static final String KEY_DEBUG_LOG = "debug_log";
     static final String KEY_RAW_LOG = "raw_log";          // 原始事件日志（排障用）
+    static final String KEY_LAST_STOPPED = "last_stopped"; // 服务上次被停用的时间戳
     static final String KEY_LOCK_UNTIL = "lock_until"; // 严格模式承诺期截止时间（毫秒）
 
     static final String MODE_STRICT = "strict";
@@ -117,14 +118,14 @@ public class GuardService extends AccessibilityService {
 
     /**
      * 把服务提升为前台服务。国产 ROM 清理后台时，前台进程的存活概率明显高于后台进程。
-     * 失败不影响拦截功能本身，只是少了这层保护。
+     *
+     * v2.8 修正：此前版本在未授予通知权限（Android 13+）时直接 return，
+     * 导致前台服务**根本没启动**，进程沦为普通后台进程，被清理的概率大幅上升——
+     * 保活形同虚设。现在无条件调用 startForeground：没有通知权限时通知不显示，
+     * 但进程仍处于前台状态，照样抗得住系统回收。
      */
     private void startForegroundIfAllowed() {
         try {
-            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(
-                    Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                return; // 未授权通知，前台通知会被系统丢弃，跳过即可
-            }
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm == null) {
                 return;
@@ -135,7 +136,6 @@ public class GuardService extends AccessibilityService {
             nm.createNotificationChannel(channel);
             startForeground(NOTIF_ID, buildNotification());
         } catch (Throwable t) {
-            SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
             logEvent("前台服务启动失败: " + t.getClass().getSimpleName());
         }
     }
@@ -521,6 +521,12 @@ public class GuardService extends AccessibilityService {
 
     @Override
     public void onDestroy() {
+        // 记录被停用的时刻：用户重开 App 时就能看到「上次于 XX:XX 停止」，
+        // 一眼判断是不是又被清理后台了，不用猜。
+        try {
+            prefs().edit().putLong(KEY_LAST_STOPPED, System.currentTimeMillis()).apply();
+        } catch (Throwable ignored) {
+        }
         cancelTimers();
         flushLogs(); // 别把内存里的日志丢掉
         super.onDestroy();
