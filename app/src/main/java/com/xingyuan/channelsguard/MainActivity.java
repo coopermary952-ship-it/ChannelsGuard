@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
     private TextView batteryView;
     private TextView lastStoppedView;
     private TextView lockCardView;
+    private TextView lastBlockView;
     private Button lockConfirmButton;
     private Button batteryButton;
     private TextView keepAliveNote;
@@ -126,6 +127,12 @@ public class MainActivity extends Activity {
         batteryView.setTextSize(14);
         batteryView.setPadding(0, dp(10), 0, 0);
         root.addView(batteryView);
+
+        lastBlockView = new TextView(this);
+        lastBlockView.setTextSize(13);
+        lastBlockView.setTextColor(Color.rgb(0x1B, 0x7D, 0x32));
+        lastBlockView.setPadding(0, dp(4), 0, 0);
+        root.addView(lastBlockView);
 
         lastStoppedView = new TextView(this);
         lastStoppedView.setTextSize(13);
@@ -235,6 +242,18 @@ public class MainActivity extends Activity {
             sensGroup.addView(rb);
         }
         root.addView(sensGroup);
+
+        Button sensMax = new Button(this);
+        sensMax.setText("一键设为最灵敏（滑一次就退）");
+        sensMax.setOnClickListener(v -> {
+            RadioButton rb = sensGroup.findViewById(3001); // 1 次
+            if (rb != null) {
+                rb.setChecked(true); // 触发 listener 保存
+            }
+            prefs.edit().putInt(GuardService.KEY_SENSITIVITY, 1).apply();
+            Toast.makeText(this, "已设为 1 次触发，立即生效", Toast.LENGTH_SHORT).show();
+        });
+        root.addView(sensMax);
 
         TextView debugLabel = sectionLabel("调试日志（拦截记录，用于排查问题）");
         root.addView(debugLabel);
@@ -680,6 +699,17 @@ public class MainActivity extends Activity {
         }
         statsView.setText("今日拦截 " + todayCount + " 次 ｜ 累计拦截 " + total + " 次"
                 + (days > 0 ? " ｜ 已守护 " + days + " 天" : ""));
+
+        long lastBlock = prefs.getLong(GuardService.KEY_LAST_BLOCK_AT, 0);
+        if (lastBlock <= 0) {
+            lastBlockView.setText("上次拦截：从未 —— 若下方日志也没有「滑动」记录，说明检测环节没工作");
+            lastBlockView.setTextColor(Color.rgb(0xC6, 0x28, 0x28));
+        } else {
+            long mins = (System.currentTimeMillis() - lastBlock) / 60000L;
+            String when = mins < 1 ? "刚刚" : mins < 60 ? mins + " 分钟前" : (mins / 60) + " 小时前";
+            lastBlockView.setText("上次拦截：" + when + "（拦截功能在工作）");
+            lastBlockView.setTextColor(Color.rgb(0x1B, 0x7D, 0x32));
+        }
     }
 
     private void refreshDebugLog() {

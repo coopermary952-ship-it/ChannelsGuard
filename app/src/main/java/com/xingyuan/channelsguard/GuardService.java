@@ -51,6 +51,7 @@ public class GuardService extends AccessibilityService {
     static final String KEY_DEBUG_LOG = "debug_log";
     static final String KEY_RAW_LOG = "raw_log";          // 原始事件日志（排障用）
     static final String KEY_LAST_STOPPED = "last_stopped"; // 服务上次被停用的时间戳
+    static final String KEY_LAST_BLOCK_AT = "last_block_at";  // 上次成功拦截的时间戳
     static final String KEY_LOCK_CONFIRMED = "lock_confirmed";      // 用户已确认加锁
     static final String KEY_LOCK_CONFIRMED_AT = "lock_confirmed_at"; // 确认加锁的时间
     static final String KEY_LOCK_UNTIL = "lock_until"; // 严格模式承诺期截止时间（毫秒）
@@ -98,7 +99,6 @@ public class GuardService extends AccessibilityService {
     private boolean flushScheduled = false;
     private long modeCacheMs = 0;
     private String modeCache = null;
-    private int sensitivityCache = 2;
 
     private Handler handler;
     private Runnable exitRunnable;
@@ -286,18 +286,20 @@ public class GuardService extends AccessibilityService {
 
         scrollAccumulator++;
         int limit;
+        int activeSensitivity = cachedSensitivity();
         // 刚进入界面时微信会自己恢复浏览位置产生滚动，用短宽限期吸收；
         // 但若在宽限期内就连滑多次，说明是你在主动刷，同样要拦。
         if (now - enterTimeMs < ENTER_GRACE_MS) {
             limit = GRACE_BURST_LIMIT;
         } else {
-            limit = cachedSensitivity();
+            limit = activeSensitivity;
         }
 
         // 少量滚动写入日志用于排查，超过 6 条后只在临近阈值时记录，避免刷屏
         if (loggedScrolls < 6 || scrollAccumulator >= limit - 1) {
             loggedScrolls++;
             logEvent("滑动 ΔY=" + dy + " 第" + scrollAccumulator + "次/阈值" + limit
+                    + "(灵敏度" + activeSensitivity + ")"
                     + (now - enterTimeMs < ENTER_GRACE_MS ? "(宽限期内连滑)" : ""));
         }
 
@@ -392,16 +394,19 @@ public class GuardService extends AccessibilityService {
         return modeCache;
     }
 
+    /**
+     * 当前灵敏度阈值。
+     *
+     * v2.11 修正：此前这个方法和 effectiveMode() 共用 modeCacheMs 时间戳，
+     * 而 effectiveMode() 每个事件都会刷新它，导致这里判断的
+     * "now - modeCacheMs >= CONFIG_CACHE_MS" 永远为 false ——
+     * **用户在界面改灵敏度，服务端永远不会生效**，界面显示 1 次、实际仍按 2 次判定。
+     *
+     * 另外：SharedPreferences.getInt() 在首次加载后是**内存读取**，并非磁盘读，
+     * 开销极小，这里直接读、零延迟，用户改完立即生效。
+     */
     private int cachedSensitivity() {
-        long now = System.currentTimeMillis();
-        if (sensitivityCache < 0) {
-            sensitivityCache = prefs().getInt(KEY_SENSITIVITY, 2);
-            modeCacheMs = now;
-        } else if (now - modeCacheMs >= CONFIG_CACHE_MS) {
-            sensitivityCache = prefs().getInt(KEY_SENSITIVITY, 2);
-            modeCacheMs = now;
-        }
-        return sensitivityCache;
+        return prefs().getInt(KEY_SENSITIVITY, 2);
     }
 
     private void recordBlock() {
@@ -409,6 +414,7 @@ public class GuardService extends AccessibilityService {
         String today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
         SharedPreferences.Editor e = p.edit();
         e.putLong(KEY_TOTAL_BLOCKS, p.getLong(KEY_TOTAL_BLOCKS, 0) + 1);
+        e.putLong(KEY_LAST_BLOCK_AT, System.currentTimeMillis());
         e.putInt(KEY_DAY_PREFIX + today, p.getInt(KEY_DAY_PREFIX + today, 0) + 1);
         if (!p.contains(KEY_FIRST_DATE)) {
             e.putString(KEY_FIRST_DATE, today);
