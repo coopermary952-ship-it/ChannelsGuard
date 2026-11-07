@@ -51,6 +51,8 @@ public class GuardService extends AccessibilityService {
     static final String KEY_DEBUG_LOG = "debug_log";
     static final String KEY_RAW_LOG = "raw_log";          // 原始事件日志（排障用）
     static final String KEY_LAST_STOPPED = "last_stopped"; // 服务上次被停用的时间戳
+    static final String KEY_LOCK_CONFIRMED = "lock_confirmed";      // 用户已确认加锁
+    static final String KEY_LOCK_CONFIRMED_AT = "lock_confirmed_at"; // 确认加锁的时间
     static final String KEY_LOCK_UNTIL = "lock_until"; // 严格模式承诺期截止时间（毫秒）
 
     static final String MODE_STRICT = "strict";
@@ -517,6 +519,41 @@ public class GuardService extends AccessibilityService {
             handler.removeCallbacks(warnRunnable);
             warnRunnable = null;
         }
+    }
+
+    @Override
+    public boolean onUnbind(Intent intent) {
+        // 服务被系统解绑：要么用户关了无障碍开关，要么 ROM 把它停用了。
+        // 这时候发一条通知，让用户立刻知道「守门员已停止」。
+        try {
+            notifyStopped();
+        } catch (Throwable ignored) {
+        }
+        return super.onUnbind(intent);
+    }
+
+    /** 通知用户服务已停止（需用户手动重新开启）。 */
+    private void notifyStopped() {
+        SharedPreferences p = prefs();
+        p.edit().putLong(KEY_LAST_STOPPED, System.currentTimeMillis()).apply();
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm == null) {
+            return;
+        }
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID, "守门员运行状态", NotificationManager.IMPORTANCE_MIN);
+        nm.createNotificationChannel(channel);
+        Intent intent = new Intent(this, MainActivity.class);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT
+                | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
+        Notification n = new Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                .setContentTitle("视频号守门员已停止")
+                .setContentText("点此重新开启无障碍服务")
+                .setContentIntent(PendingIntent.getActivity(this, 2, intent, flags))
+                .setAutoCancel(true)
+                .build();
+        nm.notify(NOTIF_ID + 1, n);
     }
 
     @Override

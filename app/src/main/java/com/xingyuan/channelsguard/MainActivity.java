@@ -63,6 +63,8 @@ public class MainActivity extends Activity {
     private TextView lockNote;
     private TextView batteryView;
     private TextView lastStoppedView;
+    private TextView lockCardView;
+    private Button lockConfirmButton;
     private Button batteryButton;
     private TextView keepAliveNote;
 
@@ -96,6 +98,29 @@ public class MainActivity extends Activity {
         openSettings.setText("开启 / 重新开启无障碍服务");
         openSettings.setOnClickListener(v -> openAccessibilitySettings());
         root.addView(openSettings);
+
+        // ===== 加锁引导卡：唯一能抵抗「清理内存」的系统级手段 =====
+        lockCardView = new TextView(this);
+        lockCardView.setTextSize(14);
+        lockCardView.setTextColor(Color.rgb(0x5D, 0x40, 0x37));
+        lockCardView.setTypeface(Typeface.DEFAULT_BOLD);
+        lockCardView.setBackgroundColor(Color.rgb(0xFF, 0xF3, 0xD6));
+        lockCardView.setPadding(dp(14), dp(12), dp(14), dp(12));
+        lockCardView.setText(buildLockCardText());
+        root.addView(lockCardView);
+
+        lockConfirmButton = new Button(this);
+        lockConfirmButton.setText("我已加锁 ✓（点此标记）");
+        lockConfirmButton.setOnClickListener(v -> {
+            prefs.edit()
+                    .putBoolean(GuardService.KEY_LOCK_CONFIRMED, true)
+                    .putLong(GuardService.KEY_LOCK_CONFIRMED_AT, System.currentTimeMillis())
+                    .apply();
+            Toast.makeText(this, "已记录。到系统多任务界面给本 App 加锁后就不会被清理了",
+                    Toast.LENGTH_LONG).show();
+            refreshLockCard();
+        });
+        root.addView(lockConfirmButton);
 
         batteryView = new TextView(this);
         batteryView.setTextSize(14);
@@ -397,6 +422,7 @@ public class MainActivity extends Activity {
         refreshDebugLog();
         refreshRawLog();
         refreshBatteryStatus();
+        refreshLockCard();
         updateVisibility();
     }
 
@@ -557,6 +583,42 @@ public class MainActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 100);
+        }
+    }
+
+
+    /** 加锁引导卡内容。加锁是华为多任务界面的系统手势，App 无法代劳，只能教。 */
+    private String buildLockCardText() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("⚠ 关键一步：给本 App 加锁\n\n");
+        sb.append("为什么：华为的「清理内存」会把本 App 清理掉，\n");
+        sb.append("无障碍服务随之停用，拦截就失效了。\n");
+        sb.append("加锁之后，点「清理内存」不会清除本 App。\n\n");
+        sb.append("怎么加（只需做一次）：\n");
+        sb.append("  1. 打开手机的多任务界面（从屏幕底部上滑）\n");
+        sb.append("  2. 找到「视频号守门员」这张卡片\n");
+        sb.append("  3. 下拉这张卡片 → 点「锁」形图标 🔒\n");
+        sb.append("  4. 卡片上出现锁标记即成功\n\n");
+        sb.append("说明：加锁是系统手势，App 无法代替你操作，\n");
+        sb.append("所以只能由你手动点一次。");
+        return sb.toString();
+    }
+
+    private void refreshLockCard() {
+        boolean confirmed = prefs.getBoolean(GuardService.KEY_LOCK_CONFIRMED, false);
+        long at = prefs.getLong(GuardService.KEY_LOCK_CONFIRMED_AT, 0);
+        if (confirmed) {
+            String time = at > 0
+                    ? new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(new Date(at))
+                    : "";
+            lockCardView.setText("✅ 已标记为「已加锁」（" + time + "）\n\n"
+                    + "但加锁状态由系统管理，本 App 读不到。\n"
+                    + "如果最近又失效了，说明锁掉了或卡片被划走了——\n"
+                    + "请到多任务界面确认一下锁标记还在。");
+            lockConfirmButton.setText("重新标记「已加锁」");
+        } else {
+            lockCardView.setText(buildLockCardText());
+            lockConfirmButton.setText("我已加锁 ✓（点此标记）");
         }
     }
 
