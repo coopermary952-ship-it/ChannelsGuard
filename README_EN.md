@@ -328,6 +328,17 @@ Issues and PRs on [the repository](https://github.com/coopermary952-ship-it/Chan
 
 > When reporting a problem, please paste the **debug log** from the app (tap **Copy debug log** at the bottom of the main screen). It makes diagnosis far faster — especially for "it didn't block" or "it blocked when it shouldn't have" cases.
 
+## Version numbering
+
+| Series | Meaning |
+| --- | --- |
+| `2.0` ~ `2.11` | Main line, one per feature iteration |
+| **`2.11.01` ~ `2.11.99`** | **Revisions on the 2.11 line** (bug fixes, packaging adjustments). Only the third segment increments: `2.11.01` < `2.11.02` < … < `2.11.99` |
+
+Revisions and the main line share the same signing key, so they can overwrite each other.
+
+> Historical releases (v2.0 ~ v2.10) were **rebuilt with the final fixed code and re-uploaded on 2026-11-08**, so downloading any of them now gets a working build. v2.0 ~ v2.6 were originally debug-signed; since the hotfix is release-signed, uninstall the old build before installing.
+
 ## License
 
 [MIT License](LICENSE) — use and modify freely; the author accepts no responsibility for consequences of use.
