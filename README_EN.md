@@ -1,5 +1,8 @@
 # ChannelsGuard · 视频号守门员
 
+> ⚠️ **Use the latest release [v2.11](https://github.com/coopermary952-ship-it/ChannelsGuard/releases/tag/v2.11)**
+> Earlier versions have known defects: the "sensitivity" setting did not take effect (the UI showed 1 swipe while the service still used 2), and v2.0–v2.6 required 4 swipes within one second to trigger — so "I scrolled through several videos and nothing was blocked" is a known symptom. Old builds remain downloadable, but please upgrade.
+
 > **One line: tap a Channels (视频号) link and watch it — swipe for the next one and you get kicked out.**
 >
 > A tiny Android accessibility service for "I only meant to watch one, then lost two hours".
