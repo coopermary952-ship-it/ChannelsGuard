@@ -587,20 +587,29 @@ public class MainActivity extends Activity {
     }
 
 
-    /** 加锁引导卡内容。加锁是华为多任务界面的系统手势，App 无法代劳，只能教。 */
+    /**
+     * 保命设置引导卡。
+     * 加锁是华为多任务界面的系统手势，App 无法代劳；不同系统版本入口不一样
+     * （有的版本要「长按卡片」，有的要「下拉卡片」），所以两种都写上。
+     */
     private String buildLockCardText() {
         StringBuilder sb = new StringBuilder();
-        sb.append("⚠ 关键一步：给本 App 加锁\n\n");
-        sb.append("为什么：华为的「清理内存」会把本 App 清理掉，\n");
-        sb.append("无障碍服务随之停用，拦截就失效了。\n");
-        sb.append("加锁之后，点「清理内存」不会清除本 App。\n\n");
-        sb.append("怎么加（只需做一次）：\n");
-        sb.append("  1. 打开手机的多任务界面（从屏幕底部上滑）\n");
-        sb.append("  2. 找到「视频号守门员」这张卡片\n");
-        sb.append("  3. 下拉这张卡片 → 点「锁」形图标 🔒\n");
-        sb.append("  4. 卡片上出现锁标记即成功\n\n");
-        sb.append("说明：加锁是系统手势，App 无法代替你操作，\n");
-        sb.append("所以只能由你手动点一次。");
+        sb.append("⚠ 两条保命设置，请都做完\n\n");
+        sb.append("【设置一】应用启动管理（三开关全开）← 更管用\n");
+        sb.append("点上方「② 打开应用启动管理」按钮，或手动进入：\n");
+        sb.append("  鸿蒙4.x：手机管家 → 应用启动管理\n");
+        sb.append("  鸿蒙5/Next：设置 → 应用 → 应用启动管理\n");
+        sb.append("  找到「视频号守门员」→ 关闭「自动管理」→ 手动管理 →\n");
+        sb.append("  把【允许自启动】【允许关联启动】【允许后台活动】全打开\n");
+        sb.append("  效果：系统的任何自动清理规则都不会删掉它\n\n");
+        sb.append("【设置二】给多任务卡片加锁\n");
+        sb.append("  1. 从屏幕底部上滑并停顿，进入多任务界面\n");
+        sb.append("  2. 找到「视频号守门员」卡片\n");
+        sb.append("  3. 长按卡片 → 菜单里选「锁定任务 / 锁定应用」🔒\n");
+        sb.append("     （有的版本是下拉卡片出现锁图标，两种都试一下）\n");
+        sb.append("  4. 卡片右上角出现小锁即成功\n");
+        sb.append("  效果：点「清理内存」时不会被清除\n\n");
+        sb.append("说明：加锁是系统手势，App 无法代劳，只能你手动点一次。");
         return sb.toString();
     }
 
@@ -611,10 +620,12 @@ public class MainActivity extends Activity {
             String time = at > 0
                     ? new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(new Date(at))
                     : "";
-            lockCardView.setText("✅ 已标记为「已加锁」（" + time + "）\n\n"
-                    + "但加锁状态由系统管理，本 App 读不到。\n"
-                    + "如果最近又失效了，说明锁掉了或卡片被划走了——\n"
-                    + "请到多任务界面确认一下锁标记还在。");
+            lockCardView.setText("✅ 已标记（" + time + "）\n\n"
+                    + "但设置状态由系统管理，本 App 读不到。\n"
+                    + "如果最近又失效了，多半是：\n"
+                    + "· 卡片上的锁被清掉了 → 重新长按加锁\n"
+                    + "· 「自动管理」被系统改回去了 → 重设三开关\n"
+                    + "· 手机重启过 → 华为会关掉第三方无障碍开关，需手动重开");
             lockConfirmButton.setText("重新标记「已加锁」");
         } else {
             lockCardView.setText(buildLockCardText());

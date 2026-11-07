@@ -543,13 +543,28 @@ public class GuardService extends AccessibilityService {
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID, "守门员运行状态", NotificationManager.IMPORTANCE_MIN);
         nm.createNotificationChannel(channel);
-        Intent intent = new Intent(this, MainActivity.class);
+        // 点通知直接跳到本 App 的无障碍设置页，少点两步
+        Intent intent = new Intent();
+        intent.setComponent(null);
+        intent.setAction("android.settings.ACCESSIBILITY_DETAILS_SETTINGS");
+        intent.setData(android.net.Uri.parse("package:" + getPackageName()));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        boolean direct = false;
+        try {
+            getPackageManager().resolveActivity(intent, 0);
+            direct = true;
+        } catch (Throwable ignored) {
+        }
+        if (!direct) {
+            intent = new Intent(this, MainActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        }
         int flags = PendingIntent.FLAG_UPDATE_CURRENT
                 | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
         Notification n = new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
                 .setContentTitle("视频号守门员已停止")
-                .setContentText("点此重新开启无障碍服务")
+                .setContentText(direct ? "点此重新开启无障碍服务" : "点此打开 App 重新开启")
                 .setContentIntent(PendingIntent.getActivity(this, 2, intent, flags))
                 .setAutoCancel(true)
                 .build();
