@@ -73,7 +73,7 @@ public class GuardService extends AccessibilityService {
      * （微信滑动切视频时偶尔会抛出一个半屏/子层窗口），也仍按视频号处理。
      * 一旦收到明确的「已离开」类名（聊天列表、桌面等）立即清零，避免误拦聊天。
      */
-    private static final long STICKY_WINDOW_MS = 8000;
+    private static final long STICKY_WINDOW_MS = 60000;
 
     /** 常驻通知：让进程前台化，降低被系统回收的概率。 */
     private static final int NOTIF_ID = 20260;
@@ -91,6 +91,10 @@ public class GuardService extends AccessibilityService {
     private long lastFinderHitMs = 0;    // 最近一次命中视频号类名的时间
     private long lastRawScrollLogMs = 0; // 原始日志中滚动行的节流时间
     private boolean leftConfirmed = false; // 已收到「明确离开视频号」的窗口事件
+    private String lastWinCls = "";         // 最近一次窗口事件类名（写进原始日志）
+    private long lastContentLogMs = 0;      // 内容变化事件的日志节流
+    private String lastEnterCls = "";      // 上次进入时的窗口类名（用于抖动检测）
+    private long lastEnterAt = 0;          // 上次进入的时间戳
 
     // ---- 性能：内存缓冲 + 批量落盘，避免在无障碍回调里频繁读写真实存储 ----
     private SharedPreferences prefs;
@@ -202,6 +206,7 @@ public class GuardService extends AccessibilityService {
         int type = event.getEventType();
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             String cls = String.valueOf(event.getClassName());
+            lastWinCls = cls;
             logRaw("WIN  " + cls);
 
             boolean nowInChannels = isFinderClass(cls);
@@ -224,6 +229,16 @@ public class GuardService extends AccessibilityService {
                 logEvent("视频号内的其它窗口(保持守护): " + cls);
             }
             inChannels = nowInChannels || (!isClearlyOutside(cls) && isSticky());
+        } else if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            // 仅诊断：粘性窗口内记录内容变化事件，用来判断「视频号滑动时到底有没有事件」。
+            // 不作为拦截触发条件（进度条更新也会触发它，直接用会频繁误退）。
+            if (inChannels || isSticky()) {
+                long now = System.currentTimeMillis();
+                if (now - lastContentLogMs > 2000) {
+                    lastContentLogMs = now;
+                    logRaw("CONTENT win=" + lastWinCls);
+                }
+            }
         } else if (type == AccessibilityEvent.TYPE_VIEW_SCROLLED && (inChannels || isSticky())) {
             if (!MODE_STRICT.equals(mode)) {
                 return; // 限时模式下允许自由滑动，到点统一退出
@@ -233,7 +248,9 @@ public class GuardService extends AccessibilityService {
                 dy = event.getScrollDeltaY();
             } catch (Throwable ignored) {
             }
-            logRaw("SCRL " + event.getClassName() + " dy=" + dy);
+            logRaw("SCRL " + event.getClassName() + " dy=" + dy
+                    + " win=" + lastWinCls + " in=" + (inChannels ? "Y" : "N")
+                    + " cnt=" + scrollAccumulator);
             onStrictScroll(dy);
         }
     }
@@ -244,15 +261,23 @@ public class GuardService extends AccessibilityService {
         return c.contains("finder") || c.contains("channels");
     }
 
-    /** 明确已在视频号之外：聊天列表、通讯录、发现、桌面等。 */
+    /**
+     * 明确已在视频号之外。
+     *
+     * v2.11 修复：原先还包含 conversation / discover / contacts，判定过宽。
+     * 其中 ConvBoxServiceConversationUI（订阅号会话页）恰恰是「从聊天里点开
+     * 视频号链接」的来源页，微信在视频号内滑动时会抛出它的窗口事件 ——
+     * 一旦被误判为「明确在外」，粘性窗口立即清零、inChannels 置 false，
+     * 之后所有滚动事件都被 (inChannels || isSticky()) 过滤掉，
+     * 表现出来就是「刷多少条都不拦」。
+     *
+     * 现在只保留真正在视频号之外的外层界面：微信主界面、桌面、聊天页。
+     */
     private boolean isClearlyOutside(String cls) {
         String c = cls == null ? "" : cls.toLowerCase();
-        return c.contains("chatting")
-                || c.contains("conversation")
-                || c.contains("launcher")
-                || c.contains("contacts")
-                || c.contains("discover")
-                || c.contains("com.tencent.mm.ui.launcher");
+        return c.contains("launcher")
+                || c.contains("mainactivity")
+                || c.contains("com.tencent.mm.ui.launcherui");
     }
 
     private boolean isSticky() {
@@ -263,10 +288,20 @@ public class GuardService extends AccessibilityService {
     // ---------------- 进入 / 离开 ----------------
 
     private void onEnterChannels(String mode, String cls) {
-        enterTimeMs = System.currentTimeMillis();
-        scrollAccumulator = 0;
-        loggedScrolls = 0;
-        logEvent("进入视频号: " + cls);
+        long now = System.currentTimeMillis();
+        // 抖动检测：1.5 秒内重复进入同一个视频号类名，说明是微信在视频号内部
+        // 抛出的重复窗口事件，不是「重新进入视频号」。
+        // 旧逻辑在这种抖动里会反复执行 scrollAccumulator = 0 与 enterTimeMs 重置，
+        // 把用户已经攒下的滑动计数一次次清零 —— 这是「刷很多条都不拦」的主因。
+        boolean jitter = cls.equals(lastEnterCls) && now - lastEnterAt < 1500;
+        lastEnterCls = cls;
+        lastEnterAt = now;
+        if (!jitter) {
+            enterTimeMs = now;
+            scrollAccumulator = 0;
+            loggedScrolls = 0;
+        }
+        logEvent((jitter ? "视频号窗口抖动(计数保留): " : "进入视频号: ") + cls);
 
         if (MODE_TIMED.equals(mode)) {
             startTimedSession();

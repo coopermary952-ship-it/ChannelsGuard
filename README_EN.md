@@ -137,6 +137,24 @@ This is not just a UI trick: even if you bypass the interface and edit the local
 8. **Sensitivity** — shown in Strict mode; how many swipes count as "you're scrolling"
 10. **Debug log** — last 30 events + a **Copy debug log** button
 
+### Why "I scrolled through many videos and nothing was blocked" (fixed in v2.11)
+
+**Two leak paths compounded; both are fixed in v2.11 (version number unchanged):**
+
+1. **The guard state was cleared by mistake**
+   The "clearly outside Channels" test used to include `conversation` — and
+   `ConvBoxServiceConversationUI` (**the very chat page you open video links from**)
+   contains that word. When WeChat throws that page's window event while you are
+   swiping inside Channels, the guard state is cleared and **every subsequent scroll
+   event is filtered out** — so nothing gets blocked. Now only the launcher and the
+   WeChat home screen count as "outside".
+2. **The swipe counter was reset over and over**
+   Once the state was wrongly cleared, the next Channels window event reset
+   `scrollAccumulator = 0` and restarted the entry grace period, wiping the swipes
+   you had already accumulated. Now a **jitter detector** treats a repeat entry to
+   the same class within 1.5 s as internal noise and keeps the counter.
+3. The sticky window was extended from 8 s to **60 s**.
+
 ### Three steps when it fails to block
 
 1. Open the **Debug log** at the bottom and look for lines like `滑动 ΔY=… 第n次` (`swipe ΔY=… #n`).
