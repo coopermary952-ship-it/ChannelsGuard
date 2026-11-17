@@ -62,6 +62,9 @@ public class GuardService extends AccessibilityService {
 
     private static final long ENTER_GRACE_MS = 900;        // 进入界面后的初始化宽限
     private static final int GRACE_BURST_LIMIT = 3;        // 宽限期内连滑这么多次也算主动刷
+    /** 内容变化突发判定：窗口内达到该次数即认为界面剧变（很可能切了视频）。 */
+    private static final int CONTENT_BURST_LIMIT = 8;
+    private static final long CONTENT_BURST_WINDOW_MS = 800;
     private static final long BLOCK_DEBOUNCE_MS = 1200;    // 两次拦截的最小间隔
     private static final long BACK_RETRY_DELAY_MS = 600;   // 返回补发的等待时间
     private static final long WARN_BEFORE_MS = 60_000;
@@ -93,6 +96,9 @@ public class GuardService extends AccessibilityService {
     private boolean leftConfirmed = false; // 已收到「明确离开视频号」的窗口事件
     private String lastWinCls = "";         // 最近一次窗口事件类名（写进原始日志）
     private long lastContentLogMs = 0;      // 内容变化事件的日志节流
+    private long lastScrollEventMs = 0;     // 最近一次滚动事件时间
+    private long contentBurstStart = 0;     // 内容突发统计窗口起点
+    private int contentBurstCount = 0;      // 窗口内的内容变化次数
     private String lastEnterCls = "";      // 上次进入时的窗口类名（用于抖动检测）
     private long lastEnterAt = 0;          // 上次进入的时间戳
 
@@ -230,13 +236,34 @@ public class GuardService extends AccessibilityService {
             }
             inChannels = nowInChannels || (!isClearlyOutside(cls) && isSticky());
         } else if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            // 仅诊断：粘性窗口内记录内容变化事件，用来判断「视频号滑动时到底有没有事件」。
-            // 不作为拦截触发条件（进度条更新也会触发它，直接用会频繁误退）。
+            // 粘性窗口内的内容变化事件。
+            // 用途有二：① 诊断（记录）② 兜底触发（内容剧变 = 很可能切了视频）
+            //
+            // 为什么需要兜底：有的微信版本在视频号里用自定义 View 实现竖向 feed，
+            // 滑动时**根本不发 TYPE_VIEW_SCROLLED**，只发内容变化事件。
+            // 这条路径不依赖滚动事件，是那一类设备的唯一抓手。
+            //
+            // 防误退：进度条更新也会触发内容变化，所以阈值取高（800ms 内 ≥8 次），
+            // 并且优先相信滚动事件路径 —— 3 秒内若收到过滚动事件，兜底不介入。
             if (inChannels || isSticky()) {
                 long now = System.currentTimeMillis();
                 if (now - lastContentLogMs > 2000) {
                     lastContentLogMs = now;
                     logRaw("CONTENT win=" + lastWinCls);
+                }
+                if (now - contentBurstStart > CONTENT_BURST_WINDOW_MS) {
+                    contentBurstStart = now;
+                    contentBurstCount = 0;
+                }
+                contentBurstCount++;
+                boolean recentScroll = now - lastScrollEventMs < 3000;
+                if (!recentScroll && contentBurstCount >= CONTENT_BURST_LIMIT
+                        && now - lastBlockMs >= BLOCK_DEBOUNCE_MS) {
+                    lastBlockMs = now;
+                    contentBurstCount = 0;
+                    logEvent("拦截: 界面内容剧变(" + CONTENT_BURST_LIMIT + "次/" 
+                            + CONTENT_BURST_WINDOW_MS + "ms, 判定为切换视频)");
+                    blockAndExit("检测到换了视频，已退出");
                 }
             }
         } else if (type == AccessibilityEvent.TYPE_VIEW_SCROLLED && (inChannels || isSticky())) {
@@ -248,6 +275,7 @@ public class GuardService extends AccessibilityService {
                 dy = event.getScrollDeltaY();
             } catch (Throwable ignored) {
             }
+            lastScrollEventMs = System.currentTimeMillis();
             logRaw("SCRL " + event.getClassName() + " dy=" + dy
                     + " win=" + lastWinCls + " in=" + (inChannels ? "Y" : "N")
                     + " cnt=" + scrollAccumulator);

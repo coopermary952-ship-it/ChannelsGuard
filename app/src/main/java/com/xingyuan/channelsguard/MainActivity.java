@@ -283,6 +283,11 @@ public class MainActivity extends Activity {
         copyRaw.setOnClickListener(v -> copyRawLog());
         root.addView(copyRaw);
 
+        Button copyBundle = new Button(this);
+        copyBundle.setText("📋 一键复制诊断包（两个日志 + 状态）");
+        copyBundle.setOnClickListener(v -> copyDiagnosticBundle());
+        root.addView(copyBundle);
+
         TextView howto = new TextView(this);
         howto.setTextSize(14);
         howto.setTextColor(Color.DKGRAY);
@@ -734,6 +739,49 @@ public class MainActivity extends Activity {
             sb.append("… 共 ").append(lines.length).append(" 行，点下方按钮复制全部");
         }
         rawLogView.setText(sb.toString().trim());
+    }
+
+    /** 把原始日志 + 调试日志 + 关键状态打包成一段文本，一次性发出去即可定位问题。 */
+    private void copyDiagnosticBundle() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("===== ChannelsGuard 诊断包 =====\n");
+        sb.append("时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                .format(new Date())).append("\n");
+        sb.append("版本: ").append(appVersionName()).append("\n");
+        sb.append("服务状态: ").append(isServiceRunning() ? "运行中" : "未开启").append("\n");
+        sb.append("模式: ").append(prefs.getString(GuardService.KEY_MODE, "strict")).append("\n");
+        sb.append("灵敏度: ").append(prefs.getInt(GuardService.KEY_SENSITIVITY, 2)).append("\n");
+        sb.append("电池白名单: ").append(isIgnoringBatteryOptimization() ? "已加入" : "未加入").append("\n");
+        sb.append("上次拦截: ").append(prefs.getLong(GuardService.KEY_LAST_BLOCK_AT, 0)).append("\n");
+        sb.append("上次停止: ").append(prefs.getLong(GuardService.KEY_LAST_STOPPED, 0)).append("\n");
+        sb.append("\n----- 原始事件日志（最近）-----\n");
+        sb.append(prefs.getString(GuardService.KEY_RAW_LOG, "（空）"));
+        sb.append("\n----- 调试日志（最近）-----\n");
+        sb.append(prefs.getString(GuardService.KEY_DEBUG_LOG, "（空）"));
+        sb.append("\n===== 诊断包结束 =====");
+
+        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null) {
+            Toast.makeText(this, "无法访问剪贴板", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        cm.setPrimaryClip(ClipData.newPlainText("ChannelsGuard-diagnostic", sb.toString()));
+        Toast.makeText(this, "诊断包已复制，直接粘贴发给我即可", Toast.LENGTH_LONG).show();
+    }
+
+    /** 取当前安装的版本名（不依赖 BuildConfig，AGP 9 默认不生成它）。 */
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Throwable t) {
+            return "未知";
+        }
+    }
+
+    private boolean isServiceRunning() {
+        String enabled = Settings.Secure.getString(getContentResolver(),
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        return enabled != null && enabled.contains(getPackageName());
     }
 
     private void copyRawLog() {
