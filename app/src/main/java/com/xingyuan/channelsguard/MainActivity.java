@@ -255,6 +255,15 @@ public class MainActivity extends Activity {
         });
         root.addView(sensMax);
 
+        TextView sensNote = new TextView(this);
+        sensNote.setTextSize(12);
+        sensNote.setTextColor(Color.GRAY);
+        sensNote.setPadding(0, dp(2), 0, 0);
+        sensNote.setText("说明：滑动次数是**累计**的，退出视频号再点开下一个链接不会清零——\n"
+                + "这是为了拦住「刷好几条」。只想看 1 条就把灵敏度调到 2 以上。\n"
+                + "进入视频号后微信自己恢复位置的那一下不会算你的滑动。");
+        root.addView(sensNote);
+
         TextView debugLabel = sectionLabel("调试日志（拦截记录，用于排查问题）");
         root.addView(debugLabel);
 

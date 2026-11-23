@@ -60,15 +60,25 @@ public class GuardService extends AccessibilityService {
     static final String MODE_TIMED = "timed";
     static final String MODE_OFF = "off";
 
-    private static final long ENTER_GRACE_MS = 900;        // 进入界面后的初始化宽限
-    private static final int GRACE_BURST_LIMIT = 3;        // 宽限期内连滑这么多次也算主动刷
+    /**
+     * 进入界面后的「假滚动豁免窗口」。
+     * 微信打开视频号时会自己恢复上次浏览位置，产生 1~N 条滚动事件（dy 常为 0）。
+     * 这些不是用户手指滑动，必须排除，否则点开视频号就被踢出去。
+     *
+     * v2.11 二次修复：原先这里是「把阈值抬到 3」，导致用户的第一次真实滑动
+     * （总是落在窗口内）永远不算数，配合「每次进入清零计数」，用户刷多少条都到不了阈值。
+     * 现在改为：窗口内的滚动直接不计数，窗口外的一律按灵敏度计数。
+     */
+    private static final long ENTER_GRACE_MS = 500;
+    /** 同一时间窗口内的重复滚动事件视为同一次滑动（微信会批量爆发 dy=0 的假事件）。 */
+    private static final long SCROLL_DEBOUNCE_MS = 300;
     /** 内容变化突发判定：窗口内达到该次数即认为界面剧变（很可能切了视频）。 */
     private static final int CONTENT_BURST_LIMIT = 8;
     private static final long CONTENT_BURST_WINDOW_MS = 800;
     private static final long BLOCK_DEBOUNCE_MS = 1200;    // 两次拦截的最小间隔
     private static final long BACK_RETRY_DELAY_MS = 600;   // 返回补发的等待时间
     private static final long WARN_BEFORE_MS = 60_000;
-    private static final int DEBUG_LOG_MAX = 30;
+    private static final int DEBUG_LOG_MAX = 60;
     private static final int RAW_LOG_MAX = 60;
 
     /**
@@ -96,6 +106,7 @@ public class GuardService extends AccessibilityService {
     private boolean leftConfirmed = false; // 已收到「明确离开视频号」的窗口事件
     private String lastWinCls = "";         // 最近一次窗口事件类名（写进原始日志）
     private long lastContentLogMs = 0;      // 内容变化事件的日志节流
+    private long lastScrollHandledMs = 0;   // 上次计入计数的滑动时间（用于 300ms 去抖）
     private long lastScrollEventMs = 0;     // 最近一次滚动事件时间
     private long contentBurstStart = 0;     // 内容突发统计窗口起点
     private int contentBurstCount = 0;      // 窗口内的内容变化次数
@@ -225,6 +236,9 @@ public class GuardService extends AccessibilityService {
                 // 明确回到了聊天/桌面等地方：解除粘性窗口，避免误拦聊天列表
                 lastFinderHitMs = 0;
                 leftConfirmed = true;
+                // 真正离开微信场景（桌面/主界面）才清空累计，回到聊天页不清 —— 
+                // 「退出视频号→再点开下一个链接」是连续刷，应累计计数。
+                scrollAccumulator = 0;
                 if (inChannels) {
                     logEvent("离开视频号: " + cls);
                     leaveChannels();
@@ -325,8 +339,10 @@ public class GuardService extends AccessibilityService {
         lastEnterCls = cls;
         lastEnterAt = now;
         if (!jitter) {
+            // 只重置「进入时刻」与日志计数，**不清零滑动累计计数**。
+            // 计数跨进入保留，才能拦住「刷好几条视频」这种连续行为；
+            // 只有真正离开微信（回到桌面/主界面）才清零。
             enterTimeMs = now;
-            scrollAccumulator = 0;
             loggedScrolls = 0;
         }
         logEvent((jitter ? "视频号窗口抖动(计数保留): " : "进入视频号: ") + cls);
@@ -347,23 +363,29 @@ public class GuardService extends AccessibilityService {
     private void onStrictScroll(int dy) {
         long now = System.currentTimeMillis();
 
-        scrollAccumulator++;
-        int limit;
-        int activeSensitivity = cachedSensitivity();
-        // 刚进入界面时微信会自己恢复浏览位置产生滚动，用短宽限期吸收；
-        // 但若在宽限期内就连滑多次，说明是你在主动刷，同样要拦。
+        // ① 去抖：300ms 内的重复滚动事件算同一次滑动。
+        //    微信进入视频号时会一次性爆发几十条 dy=0 的假滚动事件（日志实测 30 条/秒），
+        //    不去抖就会瞬间打满计数 → 在用户根本没滑动时误退。
+        if (now - lastScrollHandledMs < SCROLL_DEBOUNCE_MS) {
+            return;
+        }
+        lastScrollHandledMs = now;
+
+        // ② 假滚动豁免：进入后短时间内的滚动是微信在恢复浏览位置，不算用户滑动。
+        //    这里只做「不计数」，不再抬高阈值 —— 抬高阈值会让用户的第一次真实滑动白滑。
         if (now - enterTimeMs < ENTER_GRACE_MS) {
-            limit = GRACE_BURST_LIMIT;
-        } else {
-            limit = activeSensitivity;
+            logEvent("滑动 ΔY=" + dy + "(已豁免: 进入后的恢复滚动)");
+            return;
         }
 
-        // 少量滚动写入日志用于排查，超过 6 条后只在临近阈值时记录，避免刷屏
-        if (loggedScrolls < 6 || scrollAccumulator >= limit - 1) {
-            loggedScrolls++;
+        scrollAccumulator++;
+        int limit = cachedSensitivity();
+
+        // ③ 日志采样：滑动日志不再刷屏（之前 30 行上限会被滑动记录占满，
+        //    把「拦截」记录挤掉，导致排查时看不到关键信息）。
+        if (scrollAccumulator % 5 == 1 || scrollAccumulator >= limit - 1) {
             logEvent("滑动 ΔY=" + dy + " 第" + scrollAccumulator + "次/阈值" + limit
-                    + "(灵敏度" + activeSensitivity + ")"
-                    + (now - enterTimeMs < ENTER_GRACE_MS ? "(宽限期内连滑)" : ""));
+                    + "(灵敏度" + limit + ")");
         }
 
         if (scrollAccumulator < limit) {
